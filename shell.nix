@@ -12,6 +12,7 @@ pkgs.mkShell {
     #rust-analyzer
 
     # C/eBPF Compilers and Tools
+	bpftools
     clang
     llvm
     pkg-config
@@ -36,6 +37,18 @@ pkgs.mkShell {
   C_INCLUDE_PATH = "${pkgs.linuxHeaders}/include";
 
   shellHook = ''
+    # Dynamically generate clangd flags
+    echo "--target=bpf" > compile_flags.txt
+    echo "-D__TARGET_ARCH_x86" >> compile_flags.txt
+    echo "-I./bpf" >> compile_flags.txt
+    echo "-I./bpf/include" >> compile_flags.txt
+    echo "-I./bpf/headers" >> compile_flags.txt
+    echo "-I${pkgs.libbpf}/include" >> compile_flags.txt
+    echo "-I${pkgs.linuxHeaders}/include" >> compile_flags.txt
+
+	mkdir -p bpf/include
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/include/vmlinux.h
+
     echo "🛡️ Welcome to the bouclier-bleu NixOS dev shell!"
     echo "------------------------------------------------"
     echo "Rust version:  $(rustc --version)"
