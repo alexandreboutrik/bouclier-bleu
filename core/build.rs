@@ -13,6 +13,7 @@ fn main() {
     // This compiles the C code into eBPF bytecode and generates a Rust skeleton
     SkeletonBuilder::new()
         .source("../bpf/lsm_enforcer.bpf.c")
+        .clang_args(["-I../bpf/include"])
         .build_and_generate(&out)
         .expect("Failed to compile eBPF code");
         
