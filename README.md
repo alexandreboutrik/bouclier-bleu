@@ -47,6 +47,10 @@ ls -la
 ./target/debug/cli status
 ```
 
+## Security
+
+If you discover a security vulnerability, please check out our [Security Policy](SECURITY.md) for more details. All security vulnerabilities will be promptly addressed.
+
 ## LICENSE
 
 This project is dual-licensed. The userland engine (`core`, `cli`, `modules`) is licensed under the [Apache](LICENSE) License. The kernel-space eBPF code (`bpf/`) is strictly [GPL-2.0](bpf/LICENSE) compliant due to Linux kernel API requirements. Feel free to use, modify, and distribute the code as needed. See the [LICENSE](LICENSE) file for more information.
