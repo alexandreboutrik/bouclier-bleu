@@ -4,5 +4,4 @@ members = [
     "core",
     "modules",
     "cli",
-    "xtask"
-, "core"]
+    "xtask"]
