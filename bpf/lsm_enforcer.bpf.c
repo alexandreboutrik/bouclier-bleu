@@ -19,17 +19,21 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-/* The license must be GPL to use BPF LSM hooks */
+/* 
+ * BPF LSM programs are structurally required to be GPL licensed to interface
+ * with the kernel's security subsystem.
+ */
 char LICENSE[] SEC("license") = "GPL";
 
-/* Hook into the binary execution security check */
+/*
+ * lsm/bprm_check_security triggers prior to the execution of a new binary.
+ * - Returning 0 yields execution authority to the next LSM in the chain.
+ * - Returning a negative error code (e.g., -EPERM) vetoes the execution
+ * entirely.
+ */
 SEC("lsm/bprm_check_security")
 int BPF_PROG(lsm_bprm_check, struct linux_binprm *bprm) {
-    /* * Print to the kernel trace pipe. 
-     * In a real EDR, you would send this to a BPF Ring Buffer instead.
-     */
     bpf_printk("Bouclier Bleu: Binary executed!\\n");
     
-    /* Return 0 to Allow. (Returning -EPERM would block execution) */
     return 0; 
 }
