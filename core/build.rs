@@ -21,9 +21,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Transforms snake_case module filenames (e.g., `exec_block`) 
-/// into CamelCase struct identifiers (e.g., `ExecBlock`) required by libbpf-rs
-/// builder patterns.
+/// Normalizes module filenames into standard Rust struct identifiers.
+/// Required to dynamically invoke libbpf-rs builder patterns (e.g.,
+/// `exec_block` -> `ExecBlockSkelBuilder`).
 fn snake_to_camel(s: &str) -> String {
     s.split('_').map(|w| {
         let mut c = w.chars();
@@ -40,14 +40,16 @@ fn main() {
 
     let bpf_dir = Path::new("../bpf");
 
-    // Instruct Cargo to invalidate the build cache only if the eBPF C source
-    // directory changes.
+    // Restrict build cache invalidation strictly to changes in the eBPF C
+    // source directory.
+    // Prevents unnecessary recompilation of the entire Rust workspace.
     println!("cargo:rerun-if-changed=../bpf");
 
     let entries = fs::read_dir(bpf_dir).expect("Failed to read bpf dir");
     
     let mut module_includes = Vec::new();
-    let mut module_loaders  = Vec::new();
+    let mut load_arms       = Vec::new();
+    let mut module_names    = Vec::new();
 
     for entry in entries {
         let entry = entry.unwrap();
@@ -87,34 +89,43 @@ fn main() {
                     }
                 });
 
-                module_loaders.push(quote! {
-                    println!("· Loading module: {}", stringify!(#mod_ident));
-                    let builder = #mod_ident::#builder_ident::default();
-                    let open_skel = builder.open().context(concat!("Failed to open ", stringify!(#mod_ident)))?;
-                    let mut skel = open_skel.load().context(concat!("Failed to load ", stringify!(#mod_ident)))?;
-                    skel.attach().context(concat!("Failed to attach ", stringify!(#mod_ident)))?;
-                    skeletons.push(Box::new(skel));
+                module_names.push(base_name.to_string());
+                    
+                // Generate the dynamic load match arm
+                load_arms.push(quote! {
+                    stringify!(#mod_ident) => {
+                        let builder = #mod_ident::#builder_ident::default();
+                        let open_skel = builder.open().context(concat!("Failed to open ", stringify!(#mod_ident)))?;
+                        let mut skel = open_skel.load().context(concat!("Failed to load ", stringify!(#mod_ident)))?;
+                        skel.attach().context(concat!("Failed to attach ", stringify!(#mod_ident)))?;
+                        Ok(Box::new(skel))
+                    }
                 });
             }
         }
     }
 
+    let names = module_names.iter().map(|n| quote! { #n });
+
     // Finalize the AST and write it to the build artifacts directory.
     // This file acts as a dynamic module loader that will be safely
     // `#include`d into the userland daemon's namespace.
     let final_code = quote! {
-        use anyhow::{Context, Result};
+        use anyhow::{Context, Result, bail};
         use std::any::Any;
         use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 
         #(#module_includes)*
 
-        pub fn load_all_modules() -> Result<Vec<Box<dyn Any>>> {
-            let mut skeletons: Vec<Box<dyn Any>> = Vec::new();
-            
-            #(#module_loaders)*
-            
-            Ok(skeletons)
+        pub fn available_modules() -> Vec<&'static str> {
+            vec![ #(#names),* ]
+        }
+
+        pub fn load_module(name: &str) -> Result<Box<dyn Any>> {
+            match name {
+                #(#load_arms)*
+                _ => bail!("eBPF module '{}' not found.", name),
+            }
         }
     };
 

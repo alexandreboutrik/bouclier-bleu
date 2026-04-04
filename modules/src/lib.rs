@@ -14,36 +14,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 pub mod exec_block;
 
 /*
- * The SecurityModule trait acts as the definitive contract between the core
- * daemon's eBPF event router and the isolated userland defense mechanisms.
- * Architecture:
- * - The core router acts as a multiplexer, pulling raw C-struct bytes from the
- * BPF RingBuffer.
- * - Modules implement this trait to subscribe to these event streams.
- * - Modules should be designed to be completely decoupled from one another.
+ * SECURITY MODULE CONTRACT
+ * This trait establishes the architectural boundary between the generalized 
+ * eBPF event router (Core) and specialized defensive heuristics (Modules).
+ * Concurrency Requirements (`Send + Sync`):
+ * Modules are instantiated once at boot and shared across multiple threads 
+ * (the Main Actor loop and the IPC loop) via `Arc`. Therefore, all
+ * implementors must guarantee thread-safe interior mutability (e.g., using
+ * atomics or mutexes).
  */
-
-pub trait SecurityModule {
-    /// Returns the canonical, human-readable name of the defense module.
-    /// Used primarily by the CLI Control Plane for status reporting.
+pub trait SecurityModule: Send + Sync {
+    /// The human-readable operational name for UI/CLI presentation.
     fn name(&self) -> &'static str;
 
-    /// Returns the current operational state of the module.
-    /// A value of `false` means the module will immediately drop routed
-    /// events.
+    /// The unique system identifier used by the IPC router for targeting.
+    fn slug(&self) -> &'static str;
+
+    /// Returns the real-time operational state. 
+    /// `false` indicates the module should silently drop routed kernel events.
     fn status(&self) -> bool;
 
+    /// Instructs the module to alter its active state.
+    fn toggle(&self, state: bool);
+
     /*
-     * Process an incoming telemetry event from the kernel.
-     * PERF NOTE: `event_data` is passed as a raw byte slice directly from the
-     * BPF RingBuffer.
-     * Implementations should use zero-copy deserialization (e.g., `zerocopy`
-     * or `plain`) 
-     * to cast these bytes into strongly-typed Rust representations of the
-     * original C structs before executing heuristic logic.
+     * High-Performance Event Processing:
+     * Receives raw byte slices directly from the kernel BPF RingBuffer.
+     * Implementations must handle zero-copy deserialization locally to 
+     * prevent bottlenecking the core router thread.
      */
     fn process_event(&self, event_data: &[u8]);
+}
+
+/*
+ * INVERSION OF CONTROL (IoC) REGISTRY
+ * By constructing the registry inside the `modules` crate, the `core` engine 
+ * remains entirely agnostic to specific defense implementations. It only
+ * knows how to iterate over `Arc<dyn SecurityModule>`.
+ */
+pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
+    vec![
+        Arc::new(exec_block::ExecBlock::new()),
+        // Future expansion: Arc::new(ransomware_heur::CanaryDrop::new()),
+    ]
 }
