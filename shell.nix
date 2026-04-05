@@ -16,6 +16,7 @@ pkgs.mkShell {
     clang
     llvm
     pkg-config
+	incus
   ];
 
   buildInputs = with pkgs; [
@@ -45,9 +46,6 @@ pkgs.mkShell {
     echo "-I./bpf/headers" >> compile_flags.txt
     echo "-I${pkgs.libbpf}/include" >> compile_flags.txt
     echo "-I${pkgs.linuxHeaders}/include" >> compile_flags.txt
-
-	mkdir -p bpf/include
-	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/include/vmlinux.h
 
     echo "🛡️ Welcome to the bouclier-bleu NixOS dev shell!"
     echo "------------------------------------------------"

@@ -20,10 +20,12 @@ use quote::{format_ident, quote};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// Normalizes module filenames into standard Rust struct identifiers.
-/// Required to dynamically invoke libbpf-rs builder patterns (e.g.,
-/// `exec_block` -> `ExecBlockSkelBuilder`).
+/// Translates snake_case C filenames into CamelCase Rust identifiers.
+/// Required because libbpf-rs automatically generates skeleton builder
+/// structs utilizing CamelCase conventions (e.g., `exec_block.bpf.c` is 
+/// compiled into `ExecBlockSkelBuilder`).
 fn snake_to_camel(s: &str) -> String {
     s.split('_').map(|w| {
         let mut c = w.chars();
@@ -38,18 +40,60 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").
         expect("OUT_DIR must be set"));
 
-    let bpf_dir = Path::new("../bpf");
-
-    // Restrict build cache invalidation strictly to changes in the eBPF C
-    // source directory.
-    // Prevents unnecessary recompilation of the entire Rust workspace.
+    // Restrict build cache invalidation to the eBPF source directory.
+    // This prevents expensive recompilations of the Rust workspace unless
+    // the underlying C code or headers actually change.
     println!("cargo:rerun-if-changed=../bpf");
+
+    // Replicate the 'include/' directory structure within Cargo's isolated
+    // OUT_DIR. The eBPF C code strictly includes "include/vmlinux.h". By
+    // staging it here and passing -I<OUT_DIR> to Clang, we satisfy the
+    // compiler's relative path resolution without mutating the tracked Git
+    // repository.
+    let out_include_dir = out_dir.join("include");
+    if !out_include_dir.exists() {
+        fs::create_dir_all(&out_include_dir)
+            .expect("Failed to create include directory in OUT_DIR");
+    }
+
+    let vmlinux_path = out_include_dir.join("vmlinux.h");
+
+    let bpf_dir = Path::new("../bpf");
+    let bpf_include_dir = bpf_dir.join("include");
+
+    if !bpf_include_dir.exists() {
+        fs::create_dir_all(&bpf_include_dir)
+            .expect("Failed to construct ../bpf/include directory");
+    }
+    
+    // Dynamically dump the BPF Type Format (BTF) from the currently running
+    // kernel into a fresh vmlinux.h. This architectural choice ensures the
+    // eBPF objects are compiled against the exact memory layouts of the host
+    // system, enabling CO-RE (Compile Once - Run Everywhere) without
+    // committing a 100k+ line header.
+    let bpftool_out = Command::new("bpftool")
+        .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"])
+        .output()
+        .expect("Failed to execute bpftool. Is linux-tools-common installed?");
+
+    if !bpftool_out.status.success() {
+        panic!(
+            "Failed to dump vmlinux.h. bpftool stderr: {}", 
+            String::from_utf8_lossy(&bpftool_out.stderr)
+        );
+    }
+
+    fs::write(&vmlinux_path, bpftool_out.stdout)
+        .expect("Failed to write dynamically generated vmlinux.h");
 
     let entries = fs::read_dir(bpf_dir).expect("Failed to read bpf dir");
     
     let mut module_includes = Vec::new();
     let mut load_arms       = Vec::new();
     let mut module_names    = Vec::new();
+
+    let clang_include_bpf = format!("-I{}", bpf_include_dir.display());
+    let clang_include_out = format!("-I{}", out_dir.display());
 
     for entry in entries {
         let entry = entry.unwrap();
@@ -63,25 +107,30 @@ fn main() {
                 let skel_name = format!("{}.skel.rs", base_name);
                 let out_path = out_dir.join(&skel_name);
 
-                // Compile the C source into eBPF object files and generate the 
-                // strongly-typed Rust skeleton bindings.
+                // Orchestrate the eBPF compilation pipeline:
+                // 1. Invokes Clang to compile the C source into a BPF ELF
+                // object.
+                // 2. Invokes bpftool to generate strongly-typed Rust bindings
+                // (skeletons) that safely wrap the BPF maps and programs.
                 SkeletonBuilder::new()
                     .source(&path)
-                    .clang_args(["-I../bpf/include"])
+                    .clang_args([
+                        clang_include_bpf.as_str(),
+                        clang_include_out.as_str(),
+                    ])
                     .build_and_generate(&out_path)
-                    .unwrap_or_else(|e| panic!("Failed to compile {}: {}",
+                    .unwrap_or_else(|e| panic!("Failed to compile {}: {:?}",
                             file_name, e));
                 
                 let mod_ident = format_ident!("{}", base_name);
                 let builder_ident = format_ident!("{}SkelBuilder",
                     snake_to_camel(base_name));
 
-                /*
-                 * We use AST generation (via `quote`) rather than raw string
-                 * concatenation. This ensures the injected Rust loader code is
-                 * syntactically sound at build-time and safely handles complex
-                 * macro expansions natively.
-                 */
+                // Leverage AST generation (via the `quote` crate) rather than
+                // raw string concatenation to build the loader module. This
+                // guarantees that the injected Rust code is syntactically
+                // sound and resilient to complex macro expansions at compile
+                // time.
                 module_includes.push(quote! {
                     #[allow(non_camel_case_types, non_snake_case, dead_code)]
                     pub mod #mod_ident {
@@ -91,7 +140,9 @@ fn main() {
 
                 module_names.push(base_name.to_string());
                     
-                // Generate the dynamic load match arm
+                // Generate the state machine transitions for dynamically
+                // attaching the BPF hooks into the kernel during daemon
+                // initialization.
                 load_arms.push(quote! {
                     stringify!(#mod_ident) => {
                         let builder = #mod_ident::#builder_ident::default();
@@ -107,9 +158,11 @@ fn main() {
 
     let names = module_names.iter().map(|n| quote! { #n });
 
-    // Finalize the AST and write it to the build artifacts directory.
-    // This file acts as a dynamic module loader that will be safely
-    // `#include`d into the userland daemon's namespace.
+    // Construct a unified loader interface (`bpf_loader.rs`).
+    // This allows the Bouclier Bleu core engine to dynamically enumerate and
+    // load arbitrary eBPF modules at runtime via CLI commands (e.g., "ENABLE
+    // exec_block") without hardcoding the initialization routines for each
+    // module.
     let final_code = quote! {
         use anyhow::{Context, Result, bail};
         use std::any::Any;
@@ -132,4 +185,3 @@ fn main() {
     fs::write(out_dir.join("bpf_loader.rs"), final_code.to_string())
         .expect("Failed to write bpf_loader.rs");
 }
-
