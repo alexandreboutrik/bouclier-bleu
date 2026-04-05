@@ -126,7 +126,7 @@ function build_deb() {
 
     echo -e "\n➤ Building .deb package via Ubuntu Docker..."
 
-    docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:22.04 bash -c "
+    docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:24.04 bash -c "
         set -e
         apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
             curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems || exit 1
