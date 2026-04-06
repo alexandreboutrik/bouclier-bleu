@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const VM_NAME: &str = "bb-test-runner";
 const IMAGE_ALIAS: &str = "bouclier-bleu-test-base";
@@ -32,6 +32,7 @@ type TaskResult<T> = Result<T, String>;
 struct TestRecord {
     name: String,
     category: String,
+    duration: Duration,
     passed: bool,
 }
 
@@ -81,21 +82,40 @@ fn run_tests(category: Option<&str>) -> TaskResult<()> {
     // Bind the VM lifecycle strictly to this function's scope.
     let _guard = VmGuard; 
 
-    setup_and_snapshot_vm()?;
+    let setup_time = setup_and_snapshot_vm()?;
 
     let mut all_results: Vec<TestRecord> = Vec::new();
+    let mut cumulative_restore_time = Duration::ZERO;
 
     match category {
-        Some("component") => all_results.extend(run_component_tests()?),
-        Some("integration") => all_results.extend(run_integration_tests()?),
-        Some("performance") => all_results.extend(run_performance_tests()?),
+        Some("component") => {
+            let (res, time) = run_component_tests()?;
+            all_results.extend(res);
+            cumulative_restore_time += time;
+        },
+        Some("integration") => {
+            let (res, time) = run_integration_tests()?;
+            all_results.extend(res);
+            cumulative_restore_time += time;
+        },
+        Some("performance") => {
+            let (res, time) = run_performance_tests()?;
+            all_results.extend(res);
+            cumulative_restore_time += time;
+        },
         Some("fuzzing") | Some("threat") => {
             println!("[WARN] The '{}' test suite is private and restricted.", category.unwrap());
         }
         None | Some("all") => {
             println!("\n[INFO] Initiating public Bouclier Bleu test suites...");
-            all_results.extend(run_component_tests()?);
-            all_results.extend(run_integration_tests()?);
+
+            let (c_res, c_time) = run_component_tests()?;
+            all_results.extend(c_res);
+            cumulative_restore_time += c_time;
+            
+            let (i_res, i_time) = run_integration_tests()?;
+            all_results.extend(i_res);
+            cumulative_restore_time += i_time;
         }
         Some(other) => {
             return Err(format!("Unknown test category requested: {}", other));
@@ -104,7 +124,7 @@ fn run_tests(category: Option<&str>) -> TaskResult<()> {
 
     // Ensure artifact generation occurs before evaluating exit status to
     // preserve telemetry in CI environments.
-    if let Err(e) = generate_markdown_report(&all_results) {
+    if let Err(e) = generate_markdown_report(&all_results, setup_time, cumulative_restore_time) {
         eprintln!("[ERROR] Failed to generate markdown report: {}", e);
     }
 
@@ -119,13 +139,14 @@ fn run_tests(category: Option<&str>) -> TaskResult<()> {
 
 // --- Test Suite Runners ---
 
-fn run_component_tests() -> TaskResult<Vec<TestRecord>> {
+fn run_component_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
     let comp_dir = project_root().join("tests/component");
     let mut results = Vec::new();
+    let mut total_restore_time = Duration::ZERO;
 
     if !comp_dir.exists() {
         println!("[INFO] No component test artifacts located. Bypassing phase.");
-        return Ok(results);
+        return Ok((results, total_restore_time));
     }
 
     println!("\n[INFO] Executing Component Tests (eBPF Defenses)...");
@@ -137,12 +158,16 @@ fn run_component_tests() -> TaskResult<Vec<TestRecord>> {
             let test_name = path.file_name().unwrap().to_string_lossy();
             
             println!("\n[INFO] Reverting environment to clean state for {}...", test_name);
-            restore_vm_snapshot()?;
+            let restore_dur = restore_vm_snapshot()?;
+            total_restore_time += restore_dur;
 
             println!("[INFO] Executing {}...", test_name);
             let cmd = format!("bash tests/component/{}", test_name);
             
+            let start_time = Instant::now();
             let passed = incus_exec(&cmd).is_ok();
+            let elapsed = start_time.elapsed();
+
             if passed {
                 println!("[SUCCESS] Passed: {}", test_name);
             } else {
@@ -152,21 +177,23 @@ fn run_component_tests() -> TaskResult<Vec<TestRecord>> {
             results.push(TestRecord {
                 name: test_name.to_string(),
                 category: "component".to_string(),
+                duration: elapsed,
                 passed,
             });
         }
     }
 
-    Ok(results)
+    Ok((results, total_restore_time))
 }
 
-fn run_integration_tests() -> TaskResult<Vec<TestRecord>> {
+fn run_integration_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
     let int_dir = project_root().join("tests/integration");
     let mut results = Vec::new();
+    let mut total_restore_time = Duration::ZERO;
 
     if !int_dir.exists() {
         println!("[INFO] No integration test artifacts located. Bypassing phase.");
-        return Ok(results);
+        return Ok((results, total_restore_time));
     }
 
     println!("\n[INFO] Executing Integration Tests...");
@@ -178,12 +205,16 @@ fn run_integration_tests() -> TaskResult<Vec<TestRecord>> {
             let test_name = path.file_stem().unwrap().to_string_lossy();
             
             println!("\n[INFO] Reverting environment to clean state for {}...", test_name);
-            restore_vm_snapshot()?;
+            let restore_dur = restore_vm_snapshot()?;
+            total_restore_time += restore_dur;
 
             println!("[INFO] Executing {}...", test_name);
             let cmd = format!("cargo test --release --test {}", test_name);
             
+            let start_time = Instant::now();
             let passed = incus_exec(&cmd).is_ok();
+            let elapsed = start_time.elapsed();
+
             if passed {
                 println!("[SUCCESS] Passed: {}", test_name);
             } else {
@@ -193,27 +224,29 @@ fn run_integration_tests() -> TaskResult<Vec<TestRecord>> {
             results.push(TestRecord {
                 name: test_name.to_string(),
                 category: "integration".to_string(),
+                duration: elapsed,
                 passed,
             });
         }
     }
 
-    Ok(results)
+    Ok((results, total_restore_time))
 }
 
-fn run_performance_tests() -> TaskResult<Vec<TestRecord>> {
+fn run_performance_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
     println!("\n[INFO] Executing Performance Benchmarks (System Overhead Analysis)...");
     
     // TODO: Implement standardized system overhead and latency benchmarks.
     println!("[TODO] Performance suite is currently pending implementation. Bypassing.");
     
-    Ok(Vec::new())
+    Ok((Vec::new(), Duration::ZERO))
 }
 
 // --- Incus VM Orchestration Subsystem ---
 
-fn setup_and_snapshot_vm() -> TaskResult<()> {
+fn setup_and_snapshot_vm() -> TaskResult<Duration> {
     println!("\n[INFO] Provisioning Base Incus VM Environment...");
+    let start = Instant::now();
 
     ensure_base_image()?;
     purge_stale_instance();
@@ -224,8 +257,10 @@ fn setup_and_snapshot_vm() -> TaskResult<()> {
     inject_kernel_parameters()?;
     create_snapshot()?;
 
+    let elapsed = start.elapsed();
+
     println!("[SUCCESS] VM Environment provisioned and snapshotted.");
-    Ok(())
+    Ok(elapsed)
 }
 
 fn ensure_base_image() -> TaskResult<()> {
@@ -378,7 +413,9 @@ fn create_snapshot() -> TaskResult<()> {
     execute_cmd(Command::new("incus").args(["snapshot", "create", VM_NAME, SNAPSHOT_NAME]), "Snapshot generation aborted")
 }
 
-fn restore_vm_snapshot() -> TaskResult<()> {
+fn restore_vm_snapshot() -> TaskResult<Duration> {
+    let start = Instant::now();
+
     let _ = Command::new("incus").args(["stop", VM_NAME, "--force"]).output();
     
     execute_cmd(
@@ -387,7 +424,9 @@ fn restore_vm_snapshot() -> TaskResult<()> {
     )?;
 
     execute_cmd(Command::new("incus").args(["start", VM_NAME]), "Failed to resurrect VM from snapshot")?;
-    await_guest_agent()
+    await_guest_agent()?;
+
+    Ok(start.elapsed())
 }
 
 // --- System Utilities ---
@@ -444,20 +483,39 @@ fn prepare_test_image() -> TaskResult<()> {
     )
 }
 
-fn generate_markdown_report(results: &[TestRecord]) -> Result<(), std::io::Error> {
+fn generate_markdown_report(
+    results: &[TestRecord],
+    setup_time: Duration,
+    restore_time: Duration
+)-> Result<(), std::io::Error> {
     if results.is_empty() {
         println!("[INFO] No tests were executed. Skipping report generation.");
         return Ok(());
     }
 
     let mut report = String::from("# Bouclier Bleu Test Results\n\n");
-    report.push_str("| Test Name | Category | Status |\n");
-    report.push_str("|-----------|----------|--------|\n");
+    report.push_str("| Test Name | Category | Duration | Status |\n");
+    report.push_str("|-----------|----------|----------|--------|\n");
 
     for res in results {
         let status = if res.passed { "PASS" } else { "FAIL" };
-        report.push_str(&format!("| `{}` | {} | {} |\n", res.name, res.category, status));
+        let duration_str = format!("{:.2}s", res.duration.as_secs_f64());
+
+        report.push_str(&format!(
+                "| `{}` | {} | {} | {} |\n",
+                res.name, res.category, duration_str, status
+        ));
     }
+
+    report.push_str("\n## Pipeline Environment Metrics\n\n");
+    report.push_str(&format!(
+            "* **Initial VM Setup & Snapshot:** `{:.2}s`\n",
+            setup_time.as_secs_f64()
+    ));
+    report.push_str(&format!(
+            "* **Cumulative Snapshot Restorations:** `{:.2}s`\n",
+            restore_time.as_secs_f64()
+    ));
 
     let report_path = project_root().join("tests").join("Results.md");
     fs::write(&report_path, report)?;
