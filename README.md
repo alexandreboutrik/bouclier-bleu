@@ -1,5 +1,5 @@
 <div align="center">
-<img align="center" width="128px" src="./assets/logo.png">
+<img align="center" width="128px" src="./assets/BB-Logo.png">
 </div>
 
 <h1 align="center">Bouclier Bleu</h1>
@@ -12,7 +12,20 @@ Created as an ambitious, modular Next-Generation Antivirus (NGAV) and Endpoint D
 
 Its primary goals are to: 1.) aggressively prevent ransomware and 2.) stop memory corruption (overflows) before they compromise the system.
 
-## Instructions
+## Architecture Overview
+
+`Bouclier Bleu` is designed to be modular and it is divided into four main directories:
+
+- **`core/`**: The Rust userland daemon. It loads the eBPF programs into the kernel and routes asynchronous events to the highly decoupled defense mechanisms.
+- **`bpf/`**: The kernel-space eBPF code. It hooks into Linux Security Modules (LSM) to monitor or pause execution.
+- **`modules/`**: The userland modules. Defensive mechanisms (e.g. canary files, YARA scanners) and analysis logic. 
+- **`cli/`**: The Control Plane. Allows users to toggle specific protections and interact with the core daemon on the fly.
+
+### Modularity
+
+Each "defense capability" is implemented as a standalone module. A complete module consists of a kernel-space eBPF program (`bpf/<module>.bpf.c`) and a user-space Rust component (`modules/src/<module>.rs`).
+
+## Compilation & Usage
 
 ```bash
 # If using NixOS, load the declarative dev environment first
@@ -25,27 +38,33 @@ cargo build --release
 sudo ./target/release/core
 ```
 
-## How it Works
-
-For a deeper dive into the architecture, you can explore the source code directly, but the TL;DR is:
-
-Bouclier Bleu bridges deep kernel-level visibility with flexible user-level analysis. The kernel component (`bpf/`) hooks into Linux Security Modules (LSM) to monitor or pause execution. The Rust userland daemon (`core/`) loads these BPF programs and routes asynchronous events to highly decoupled defense mechanisms (`modules/`) - such as Canary file monitors or YARA scanners - allowing users to toggle specific protections on the fly via the Control Plane (`cli/`).
-
-## How to Reproduce the Tests
-
-You can reproduce our initial Proof of Concept (PoC) kernel hook tests by following these steps across three separate terminal windows:
+We also include an automated release pipeline (`scripts/release.sh`) for cross-distribution packaging (`via fpm`), GitHub Relases, and package manager repository updates.
 
 ```bash
-# Terminal 1: Start the core engine
-sudo ./target/debug/core
-
-# Terminal 2: Listen to the BPF telemetry output
-sudo cat /sys/kernel/tracing/trace_pipe
-
-# Terminal 3: Trigger an execution event and check the CLI
-ls -la
-./target/debug/cli status
+./scripts/release.sh -h
 ```
+
+## Testing Pipeline
+
+`Bouclier Bleu` uses an isolated testing infrastructure powered by `incus` to virtualize an Ubuntu 24.04 environment. This ensures that potentially destructive tests (like malware execution) do not harm the host system.
+
+We manage the testing lifecycle using a custom `xtask` runner. Upon completion, it automatically generates a markdown report at `tests/Results.md` mapping out test statuses, durations, and environment metrics.
+
+### Running the Tests
+
+We manage the testing lifecycle using a custom `xtask` runner:
+
+```bash
+# Run all test suites
+cargo xtask test
+
+# Run a specific suit
+cargo xtask test component
+cargo xtask test integration
+```
+
+> [!Note]
+> The test runner requires a base testing image (`bouclier-bleu-test-base.tar.gz/xz`). If this image is not found in the `tests/` directory (it is `.gitignore`d by default), `xtask` will automatically execute `scripts/build_image.sh` to provision, build, and export a fresh Ubuntu 24.04 image before running the tests. Therefore, for the first time you run `cargo xtask test`, it will take longer.
 
 ## Security
 
