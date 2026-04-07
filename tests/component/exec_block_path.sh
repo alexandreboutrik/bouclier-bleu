@@ -26,6 +26,7 @@ set -uo pipefail
 : "${TEST_PAYLOAD:="/tmp/bb_test_payload"}"
 : "${TEST_SYMLINK:="/root/bb_test_symlink"}"
 : "${TEST_UNMONITORED:="/var/crash/bb_test_payload"}"
+: "${TEST_LONG_PATH_BASE:="/tmp/bb_long_path_test"}"
 : "${DAEMON_LOG:="/tmp/bb_daemon_path.log"}"
 : "${EPERM_EXIT_CODE:=126}"
 
@@ -166,6 +167,41 @@ function verify_unmonitored_paths() {
     echo "  [+] Execution from unmonitored path successfully vetoed."
 }
 
+function verify_path_length_evasion() {
+    echo "  [*] Validating Path Length Exhaustion (-ENAMETOOLONG) evasion vectors..."
+
+    local current_path="${TEST_LONG_PATH_BASE}"
+    mkdir -p "${current_path}" || { echo "[-] Failed to create base long path directory."; exit 1; }
+
+    # Build a deeply nested directory structure exceeding 300 characters
+    # to overflow the original 256-byte eBPF buffer limit.
+    for i in {1..30}; do
+        current_path="${current_path}/AAAAAAAAAA"
+    done
+
+    mkdir -p "${current_path}" ||
+		{ echo "[-] Failed to create deeply nested path."; exit 1; }
+
+    local long_payload="${current_path}/payload"
+    cp "${TEST_PAYLOAD}" "${long_payload}" ||
+		{ echo "[-] Failed to copy payload to nested path."; exit 1; }
+    chmod +x "${long_payload}"
+
+    # Attempt to execute the payload from the excessively long path
+    set +e
+    "${long_payload}" > /dev/null 2>&1
+    local exit_code_long=$?
+    set -e
+
+    # If the execution succeeds (exit code 0), the eBPF program failed open.
+    if [[ "${exit_code_long}" -ne "${EPERM_EXIT_CODE}" ]] && [[ "${exit_code_long}" -ne 1 ]]; then
+        echo "[-] Assertion failed: Path length evasion bypassed the LSM hook. The eBPF program failed OPEN."
+        exit 1
+    fi
+
+    echo "  [+] Path length evasion successfully vetoed (Program safely failed CLOSED or buffer was expanded)."
+}
+
 # ==========================================
 # ENTRYPOINT
 # ==========================================
@@ -175,5 +211,6 @@ initialize_daemon
 verify_path_normalization_bypass
 verify_symlink_bypass
 verify_unmonitored_paths
+verify_path_length_evasion
 
 echo "  [+] Module 'exec_block_path' validation passed."

@@ -24,6 +24,28 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define EPERM 1
 
+#define PATH_MAX 4096
+#define ENAMETOOLONG 36
+
+/*
+ * Canonical Path Resolution Buffer
+ * eBPF programs are strictly constrained by a 512-byte stack limit, making 
+ * on-stack allocations of PATH_MAX (4096 bytes) impossible. To securely 
+ * resolve absolute execution paths without truncation or triggering 
+ * -ENAMETOOLONG fail-open vulnerabilities, we allocate a dedicated memory 
+ * segment.
+ * Utilizing a BPF_MAP_TYPE_PERCPU_ARRAY provides a lock-free, zero-contention
+ * memory region dedicated to each CPU core. This ensures that concurrent
+ * execve syscalls do not overwrite each other's path resolution buffers 
+ * while maintaining O(1) latency.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, char[PATH_MAX]);
+    __uint(max_entries, 1);
+} path_buffer_map SEC(".maps");
+
 /*
  * Control Plane Synchronization Map
  * Facilitates real-time state synchronization between the Rust userland daemon
@@ -42,7 +64,7 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
     __u32 key = 0;
     __u32 *is_active;
     struct file *file;
-    char path_buf[256] = {0};
+    char *path_buf;
     long len;
 
     /*
@@ -66,13 +88,28 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
         return 0;
     }
 
+	/*
+     * Acquire the CPU-local scratch buffer for canonicalizing the inode path.
+     * A lookup failure here typically indicates a severe kernel memory
+	 * exhaustion during map initialization, rather than a runtime logic error.
+	 * In such extreme edge cases, we fail-open (return 0) to preserve core
+	 * system stability.
+     */
+    path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
+    if (!path_buf) {
+        return 0;
+    }
+
     /*
      * Resolve the fully canonicalized, absolute path of the underlying inode.
      * bpf_d_path natively handles mount points, namespace translations, and
      * symlink resolution, mitigating bypasses via path normalization.
      */
-    len = bpf_d_path(&file->f_path, path_buf, sizeof(path_buf));
-    if (len <= 0) {
+    len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
+	if (len == -ENAMETOOLONG) {
+		bpf_printk("Bouclier Bleu [BLOCK]: Evasion attempt (Path too long)\n");
+        return -EPERM;
+	} else if (len <= 0) {
         return 0;
     }
 
@@ -121,6 +158,22 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
         path_buf[6] == 's' && path_buf[7] == 'e' && path_buf[8] == 'r' && 
         path_buf[9] == '/')
         goto block_exec;
+
+	/*
+     * TODO: Fileless Execution (memfd_create) Mitigation
+     * Advanced droppers frequently utilize memfd_create coupled with fexecve
+	 * to execute payloads directly from memory, bypassing the on-disk path
+	 * heuristics above. The resolved path typically prefixes with "memfd:" or
+	 * "/memfd:".
+     * However, an unilateral string-matching block on memfd execution
+	 * introduces unacceptable false-positive rates, actively breaking core
+	 * container runtimes (runC, Docker), systemd IPC, and sandboxed desktop
+	 * applications (Flatpak) which rely on memfd for secure, isolated
+	 * execution.
+     * In the future, this hook will be expanded to include a refined
+	 * behavioral heuristic with Seal Inspection (e.g. F_SEAL_WRITE) and
+	 * Process Lineage (e.g. map allowlist).
+     */
 
     return 0;
 
