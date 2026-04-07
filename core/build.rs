@@ -90,6 +90,7 @@ fn main() {
     
     let mut module_includes = Vec::new();
     let mut load_arms       = Vec::new();
+    let mut toggle_arms     = Vec::new();
     let mut module_names    = Vec::new();
 
     let clang_include_bpf = format!("-I{}", bpf_include_dir.display());
@@ -121,16 +122,16 @@ fn main() {
                     .build_and_generate(&out_path)
                     .unwrap_or_else(|e| panic!("Failed to compile {}: {:?}",
                             file_name, e));
-                
-                let mod_ident = format_ident!("{}", base_name);
-                let builder_ident = format_ident!("{}SkelBuilder",
-                    snake_to_camel(base_name));
 
                 // Leverage AST generation (via the `quote` crate) rather than
                 // raw string concatenation to build the loader module. This
                 // guarantees that the injected Rust code is syntactically
                 // sound and resilient to complex macro expansions at compile
                 // time.
+                let mod_ident = format_ident!("{}", base_name);
+                let builder_ident = format_ident!("{}SkelBuilder", snake_to_camel(base_name));
+                let skel_ident = format_ident!("{}Skel", snake_to_camel(base_name));
+
                 module_includes.push(quote! {
                     #[allow(non_camel_case_types, non_snake_case, dead_code)]
                     pub mod #mod_ident {
@@ -152,6 +153,49 @@ fn main() {
                         Ok(Box::new(skel))
                     }
                 });
+
+                /*
+                 * HEURISTIC AST GENERATION:
+                 * Not all eBPF modules require a Control Plane `state_map`
+                 * (e.g., simple telemetry loggers). We scan the C source code
+                 * here to check if `state_map` is declared.
+                 * If present, we generate the Rust map update logic. If
+                 * absent, we omit it, preventing `rustc` from panicking over
+                 * missing struct methods in the skeleton.
+                 */
+                let c_code = fs::read_to_string(&path)
+                    .unwrap_or_else(|_| String::new());
+                
+                let (map_update_logic, skeleton_binding) = if c_code.contains("state_map") {
+                    (quote! {
+                        let key: [u8; 4] = 0u32.to_ne_bytes();
+                        let val: [u8; 4] = if active { 1u32 } else { 0u32 }.to_ne_bytes();
+                        
+                        // Execute high-speed BPF Map update.
+                        s.maps().state_map().update(&key, &val, MapFlags::ANY)
+                            .context(concat!("Failed to synchronize eBPF state_map for ", stringify!(#mod_ident)))?;
+                    }, quote! { s })
+                } else {
+                    (quote! {
+                        // This eBPF module does not declare a `state_map`. 
+                        // Silently bypass synchronization as there is no
+                        // state to mutate.
+                    }, quote! { _s })
+                };
+
+                // Generate dynamic dispatch arms for map state synchronization
+                toggle_arms.push(quote! {
+                    stringify!(#mod_ident) => {
+                        // Safely downcast the generic Any trait object into
+                        // the strongly typed skeleton
+                        if let Some(#skeleton_binding) = skel.downcast_ref::<#mod_ident::#skel_ident>() {
+                            #map_update_logic
+                            Ok(())
+                        } else {
+                            bail!("Type downcast failed for module skeleton '{}'", name);
+                        }
+                    }
+                });
             }
         }
     }
@@ -159,14 +203,11 @@ fn main() {
     let names = module_names.iter().map(|n| quote! { #n });
 
     // Construct a unified loader interface (`bpf_loader.rs`).
-    // This allows the Bouclier Bleu core engine to dynamically enumerate and
-    // load arbitrary eBPF modules at runtime via CLI commands (e.g., "ENABLE
-    // exec_block") without hardcoding the initialization routines for each
-    // module.
     let final_code = quote! {
         use anyhow::{Context, Result, bail};
         use std::any::Any;
         use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
+        use libbpf_rs::MapFlags;
 
         #(#module_includes)*
 
@@ -174,10 +215,22 @@ fn main() {
             vec![ #(#names),* ]
         }
 
+        /// Dispatches module loading logic dynamically based on string names.
         pub fn load_module(name: &str) -> Result<Box<dyn Any>> {
             match name {
                 #(#load_arms)*
                 _ => bail!("eBPF module '{}' not found.", name),
+            }
+        }
+
+        /// Synchronizes the administrative state with the kernel-space BPF map.
+        /// Prevents Denial-of-Service and pipeline breakage by toggling logic 
+        /// in the kernel context instead of dropping the full LSM link
+        /// descriptor.
+        pub fn set_module_state(skel: &dyn Any, name: &str, active: bool) -> Result<()> {
+            match name {
+                #(#toggle_arms)*
+                _ => bail!("Unknown eBPF module '{}'", name),
             }
         }
     };

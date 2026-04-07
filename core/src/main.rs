@@ -38,38 +38,53 @@ pub mod bpf_loader {
 fn main() -> Result<()> {
     println!("🛡️ Starting Bouclier Bleu Core Engine...");
 
-    // The userland registry acts as the logical abstraction layer for defense
-    // rules.
-    // By wrapping these in Arc, we safely share read-only access across worker
-    // threads.
+    /*
+     * REGISTRY INITIALIZATION:
+     * The userland registry acts as the logical abstraction layer for defense
+     * rules.
+     * Wrapping these in Arc ensures safe, read-only concurrent access across
+     * our asynchronous worker threads, adhering strictly to Rust's memory
+     * safety guarantees.
+     */
     let registry: Vec<Arc<dyn SecurityModule + Send + Sync>> = modules::build_registry();
     let shared_registry = Arc::new(registry);
 
     /*
      * KERNEL MEMORY LIFECYCLE:
-     * eBPF programs remain attached to the kernel *strictly* as long as their
-     * userland file descriptors are held open. The `active_skeletons` map
-     * ties the lifespan of the kernel-space security hooks to this process
-     * thread.
+     * We maintain active eBPF skeletons strictly in memory. Dropping these 
+     * file descriptors would instruct the kernel to abruptly detach the BPF
+     * hooks.
+     * For real-time state manipulation (toggling on/off), we now synchronize 
+     * state directly into the kernel's maps to avoid performance bottlenecks
+     * and fail-open race conditions associated with rapid attach/detach
+     * cycles.
      */
     let mut active_skeletons: HashMap<String, Box<dyn Any>> = HashMap::new();
 
     for mod_name in bpf_loader::available_modules() {
         if let Ok(skel) = bpf_loader::load_module(mod_name) {
             println!("· Loaded and Attached eBPF module: {}", mod_name);
+            
+            // Synchronize initial enforcement state directly into the kernel
+            if let Err(e) = bpf_loader::set_module_state(&*skel, mod_name, true) {
+                println!("· [Warning] Failed to initialize kernel state map for {}: {}", mod_name, e);
+            }
+
             active_skeletons.insert(mod_name.to_string(), skel);
             
-            if let Some(user_mod) = shared_registry.iter().find(|m| m.slug()
-                == mod_name) {
+            if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
                 user_mod.toggle(true);
             }
         }
     }
     println!("· [Success] All defensive eBPF modules loaded and attached.");
 
-    // Establish the IPC Control Plane via an mpsc channel, enforcing an Actor
-    // Model design.
-    // The main thread retains exclusive mutation rights over kernel skeletons.
+    /*
+     * IPC CONTROL PLANE:
+     * Establishes a Multi-Producer, Single-Consumer (mpsc) channel following 
+     * the Actor Model. The main thread retains exclusive mutation rights over 
+     * kernel skeletons and BPF maps, thereby preventing data races.
+     */
     let (tx, rx) = mpsc::channel();
     ipc::start_ipc_server(tx);
     println!("· [Success] Engine is running securely.");
@@ -94,11 +109,28 @@ fn main() -> Result<()> {
                 }
                 
                 ipc::DaemonCmd::Enable(target) => {
-                    if active_skeletons.contains_key(&target) {
-                        format!("SUCCESS: Module '{}' is already ENABLED\n", target)
+                    if let Some(skel) = active_skeletons.get(&target) {
+                        // FAST PATH
+                        // Sync the `state_map` directly. No kernel
+                        // reallocation needed.
+                        match bpf_loader::set_module_state(&**skel, &target, true) {
+                            Ok(_) => {
+                                if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
+                                    user_mod.toggle(true);
+                                }
+                                format!("SUCCESS: Defense module '{}' has been ENABLED via state_map synchronization\n", target)
+                            }
+                            Err(e) => format!("ERROR: Failed to update kernel state for '{}': {}\n", target, e),
+                        }
                     } else {
+                        // SLOW PATH
+                        // Complete reload of the BPF program into the kernel
+                        // if it crashed or was absent.
                         match bpf_loader::load_module(&target) {
                             Ok(skel) => {
+                                if let Err(e) = bpf_loader::set_module_state(&*skel, &target, true) {
+                                    println!("· [Warning] Failed to set initial state_map for {}: {}", target, e);
+                                }
                                 active_skeletons.insert(target.clone(), skel);
                                 if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
                                     user_mod.toggle(true);
@@ -112,18 +144,23 @@ fn main() -> Result<()> {
                 
                 ipc::DaemonCmd::Disable(target) => {
                     /*
-                     * ZERO-DOWNTIME DETACHMENT:
-                     * By removing the skeleton from the HashMap, Rust invokes
-                     * its `Drop` implementation. `libbpf-rs` translates this
-                     * into closing the file descriptor, which instructs the
-                     * Linux kernel to immediately detach the BPF hook without
-                     * requiring a daemon restart.
+                     * REAL-TIME KERNEL SYNCHRONIZATION:
+                     * Instead of completely detaching the eBPF hook (which
+                     * induces high latency and potential fail-open
+                     * vulnerabilities), we utilize the high-speed `state_map`
+                     * to toggle the enforcement logic seamlessly while
+                     * maintaining our connection to the BPF telemetry stream.
                      */
-                    if active_skeletons.remove(&target).is_some() {
-                        if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
-                            user_mod.toggle(false);
+                    if let Some(skel) = active_skeletons.get(&target) {
+                        match bpf_loader::set_module_state(&**skel, &target, false) {
+                            Ok(_) => {
+                                if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
+                                    user_mod.toggle(false);
+                                }
+                                format!("SUCCESS: Defense module '{}' has been DISABLED via state_map synchronization\n", target)
+                            }
+                            Err(e) => format!("ERROR: Failed to update kernel state for '{}': {}\n", target, e),
                         }
-                        format!("WARN: Defense module '{}' has been DISABLED and DETACHED\n", target)
                     } else {
                         format!("ERROR: Module '{}' is not currently active\n", target)
                     }

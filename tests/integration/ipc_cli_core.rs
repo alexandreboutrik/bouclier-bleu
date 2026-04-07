@@ -89,7 +89,7 @@ fn test_ipc_disable_command() {
     stream.read_to_string(&mut response).expect("Failed to read IPC response stream.");
 
     assert!(
-        response.contains("WARN: Defense module 'exec_block' has been DISABLED"),
+        response.contains("SUCCESS: Defense module 'exec_block' has been DISABLED via state_map synchronization"),
         "Unexpected IPC response payload: {}",
         response
     );

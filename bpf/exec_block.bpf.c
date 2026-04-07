@@ -18,65 +18,119 @@
 #include "include/vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h> // Required for CO-RE
+#include <bpf/bpf_core_read.h>
 
-// Required by the kernel to attach to LSM hooks
 char LICENSE[] SEC("license") = "GPL";
 
-/* Linux standard error code for Operation Not Permitted */
 #define EPERM 1
+
+/*
+ * Control Plane Synchronization Map
+ * Facilitates real-time state synchronization between the Rust userland daemon
+ * and this kernel module. A value of 0 indicates the module is 
+ * administratively disabled, while 1 indicates active enforcement.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 1);
+} state_map SEC(".maps");
 
 SEC("lsm/bprm_check_security")
 int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
-    const char *filename_ptr;
+    __u32 key = 0;
+    __u32 *is_active;
+    struct file *file;
     char path_buf[256] = {0};
+    long len;
 
-	/*
-	 * CO-RE (Compile Once - Run Everywhere) allows us to safely extract
-	 * struct fields dynamically based on the host kernel's BTF data, ensuring
-	 * compatibility across different Linux kernel versions without
-	 * recompilation.
+    /*
+     * Verify administrative state. We fail-open (allow execution) if the map
+     * lookup fails or if the policy is explicitly disabled by the control
+	 * plane.
      */
-    filename_ptr = BPF_CORE_READ(bprm, filename);
-	// Allow execution if we can't read the pointer
-    if (!filename_ptr) return 0;
+    is_active = bpf_map_lookup_elem(&state_map, &key);
+    if (!is_active || *is_active == 0) {
+        return 0;
+    }
 
-    long len = bpf_probe_read_kernel_str(path_buf, sizeof(path_buf), filename_ptr);
-    if (len <= 0) return 0;
+    /*
+     * Extract the file structure to resolve the canonical path.
+     * Relying on bprm->filename is insecure as it only reflects the string
+	 * passed by user-space, which is vulnerable to symlink and relative path
+	 * manipulation.
+     */
+	file = bprm->file;
+    if (!file) {
+        return 0;
+    }
 
-	/*
-     * The BPF Verifier strictly limits loops. We use direct memory offset
-	 * comparisons here to ensure O(1) execution time and guaranteed verifier
-	 * acceptance.
-	 * We target world-writable directories commonly used as staging grounds 
-     * for post-exploitation payloads.
+    /*
+     * Resolve the fully canonicalized, absolute path of the underlying inode.
+     * bpf_d_path natively handles mount points, namespace translations, and
+     * symlink resolution, mitigating bypasses via path normalization.
+     */
+    len = bpf_d_path(&file->f_path, path_buf, sizeof(path_buf));
+    if (len <= 0) {
+        return 0;
+    }
+
+    /*
+     * Path Heuristics Verification
+     * Target execution attempts originating from world-writable directories
+     * commonly utilized for staging secondary payloads or web-shell droppers.
+     * Note: Direct memory offset comparisons are utilized to guarantee O(1)
+     * execution time and ensure BPF verifier compliance.
      */
 
-    // - /tmp/
+    // /tmp/
     if (path_buf[0] == '/' && path_buf[1] == 't' && path_buf[2] == 'm' && 
         path_buf[3] == 'p' && path_buf[4] == '/')
-		goto block_exec;
+        goto block_exec;
 
-    // - /var/tmp/
+    // /var/tmp/
     if (path_buf[0] == '/' && path_buf[1] == 'v' && path_buf[2] == 'a' && 
         path_buf[3] == 'r' && path_buf[4] == '/' && path_buf[5] == 't' && 
         path_buf[6] == 'm' && path_buf[7] == 'p' && path_buf[8] == '/')
-		goto block_exec;
+        goto block_exec;
 
-    // - /dev/shm/
+    // /dev/shm/
     if (path_buf[0] == '/' && path_buf[1] == 'd' && path_buf[2] == 'e' && 
         path_buf[3] == 'v' && path_buf[4] == '/' && path_buf[5] == 's' && 
         path_buf[6] == 'h' && path_buf[7] == 'm' && path_buf[8] == '/')
-		goto block_exec;
+        goto block_exec;
 
-	// Defer to subsequent LSMs / allow execution
-    return 0; 
+	// /var/crash/ (Apport dump staging)
+    if (path_buf[0] == '/' && path_buf[1] == 'v' && path_buf[2] == 'a' && 
+        path_buf[3] == 'r' && path_buf[4] == '/' && path_buf[5] == 'c' && 
+        path_buf[6] == 'r' && path_buf[7] == 'a' && path_buf[8] == 's' && 
+        path_buf[9] == 'h' && path_buf[10] == '/')
+        goto block_exec;
+
+    // /dev/mqueue/ (POSIX message queues)
+    if (path_buf[0] == '/' && path_buf[1] == 'd' && path_buf[2] == 'e' && 
+        path_buf[3] == 'v' && path_buf[4] == '/' && path_buf[5] == 'm' && 
+        path_buf[6] == 'q' && path_buf[7] == 'u' && path_buf[8] == 'e' && 
+        path_buf[9] == 'u' && path_buf[10] == 'e' && path_buf[11] == '/')
+        goto block_exec;
+
+    // /run/user/ (User-specific volatile runtime)
+    if (path_buf[0] == '/' && path_buf[1] == 'r' && path_buf[2] == 'u' && 
+        path_buf[3] == 'n' && path_buf[4] == '/' && path_buf[5] == 'u' && 
+        path_buf[6] == 's' && path_buf[7] == 'e' && path_buf[8] == 'r' && 
+        path_buf[9] == '/')
+        goto block_exec;
+
+    return 0;
 
 block_exec:
-	/* Note: Logging is restricted to trace_pipe for the PoC.
-     * Production implementation should route this via a BPF RingBuffer to
-	 * userland.
+    /*
+     * FIXME: Production implementation required.
+     * Telemetry should be routed via a BPF RingBuffer to userland for SIEM
+     * ingestion. bpf_printk is utilized temporarily for PoC validation but
+     * risks trace_pipe saturation and high CPU overhead under load.
      */
-    bpf_printk("Bouclier Bleu [BLOCK]: %s\n", path_buf);
-	return -EPERM;
+    bpf_printk("Bouclier Bleu [BLOCK]: Executed from protected path: %s\n", path_buf);
+    return -EPERM;
 }
