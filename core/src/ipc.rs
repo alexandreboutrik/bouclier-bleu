@@ -20,12 +20,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use rustix::net::sockopt;
 
-const SOCKET_PATH: &str = "/var/run/bouclier-bleu.sock";
+const SOCKET_DIR: &str = "/var/run/bouclier-bleu";
+const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 /// Strongly typed RPC commands strictly parsed from raw socket payloads.
+/// This enum acts as the serialization boundary, ensuring only syntactically
+/// valid directives propagate to the core execution engine.
 pub enum DaemonCmd {
     Status,
     List,
@@ -34,8 +38,9 @@ pub enum DaemonCmd {
 }
 
 /// Represents an encapsulated transaction across the IPC boundary.
-/// Includes an mpsc Sender for the Main thread to asynchronouslly reply to
-/// the socket.
+/// Includes a single-use transmission channel (`mpsc::Sender`) allowing the 
+/// asynchronous core engine to route execution results back to the synchronous 
+/// socket thread.
 pub struct IpcMessage {
     pub cmd: DaemonCmd,
     pub reply: mpsc::Sender<String>,
@@ -45,21 +50,39 @@ pub struct IpcMessage {
 /// Exclusively handles socket connections and command parsing, delegating 
 /// actual state mutation to the main execution engine via `mpsc`.
 pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
-    // Clean up lingering socket files from previous ungraceful shutdowns
+    /*
+     * SECURE DIRECTORY PATTERN (TOCTOU Mitigation)
+     * To safely bind a Unix socket without exposing a microsecond window of 
+     * world-readability (Time-of-Check to Time-of-Use race condition), we
+     * utilize a strictly permissioned parent directory.
+     * The Linux VFS layer evaluates path permissions top-down. By restricting
+     * the directory to root (0700) BEFORE binding the socket inside it, we
+     * guarantee the socket is completely inaccessible to unprivileged
+     * processes from the exact moment of its creation.
+     */
+    if let Err(e) = fs::create_dir_all(SOCKET_DIR) {
+        eprintln!("FATAL: Failed to construct secure IPC directory: {}", e);
+        return;
+    }
+
+    let dir_perms = Permissions::from_mode(0o700);
+    if let Err(e) = fs::set_permissions(SOCKET_DIR, dir_perms) {
+        eprintln!("FATAL: Failed to enforce 0700 permissions on IPC directory: {}", e);
+        return;
+    }
+
+    // Purge lingering inode from previous ungraceful daemon terminations.
     let _ = fs::remove_file(SOCKET_PATH);
 
     let listener = UnixListener::bind(SOCKET_PATH)
-        .expect("Failed to bind to Unix socket");
+        .expect("FATAL: Failed to bind to Unix socket");
 
-    /*
-     * DEFENSE IN DEPTH: Stage 1 (Filesystem Restrictions)
-     * We strictly set the socket file permissions to 0600 (rw-------).
-     * This ensures the Linux kernel will block any non-root user from even 
-     * attempting to open a connection to the socket.
-     */
-    let perms = Permissions::from_mode(0o600);
-    fs::set_permissions(SOCKET_PATH, perms)
-        .expect("Failed to set strict permissions on IPC socket");
+    // Defense-in-Depth: Lock down the socket file itself, though the parent
+    // directory already prevents unauthorized traversal.
+    let sock_perms = Permissions::from_mode(0o600);
+    if let Err(e) = fs::set_permissions(SOCKET_PATH, sock_perms) {
+        eprintln!("WARNING: Failed to set strict permissions on socket file: {}", e);
+    }
 
     thread::spawn(move || {
         println!("· IPC Control Plane listening securely on {}", SOCKET_PATH);
@@ -68,11 +91,13 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
             match stream {
                 Ok(mut stream) => {
                     /*
-                     * DEFENSE IN DEPTH: Stage 2 (SO_PEERCRED Validation)
-                     * We query the kernel to cryptographically verify the
-                     * identity of the process on the other end of the socket.
-                     * If it is not explicitly UID 0 (root), we drop the
-                     * connection immediately.
+                     * DEFENSE IN DEPTH: SO_PEERCRED Identity Verification
+                     * We query the kernel directly via the socket file
+                     * descriptor to ascertain the authentic UID of the
+                     * connecting process.
+                     * This cryptographic verification completely bypasses
+                     * user-space spoofing attempts. If the caller is not
+                     * strictly UID 0 (root), the connection is terminated.
                      */
                     match sockopt::get_socket_peercred(&stream) {
                         Ok(cred) => {
@@ -83,9 +108,23 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
                             }
                         }
                         Err(e) => {
-                            eprintln!("SECURITY ERROR: Failed to get peer credentials: {}. Dropping connection.", e);
+                            eprintln!("SECURITY ERROR: Kernel failed to yield peer credentials: {}. Dropping connection.", e);
                             continue;
                         }
+                    }
+
+                    /*
+                     * RESOURCE EXHAUSTION MITIGATION (Anti-DoS)
+                     * Since the listener processes connections sequentially to 
+                     * avoid thread-spawning overhead, a malicious root client 
+                     * could connect and refuse to send data, hanging the 
+                     * entire control plane. We enforce a strict read timeout
+                     * to sever stalled connections and maintain daemon
+                     * availability.
+                     */
+                    if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(100))) {
+                        eprintln!("WARNING: Failed to apply read timeout to stream: {}", e);
+                        continue;
                     }
 
                     let mut buffer = [0; 1024];
@@ -107,11 +146,21 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
 
                         let (reply_tx, reply_rx) = mpsc::channel();
 
-                        // Dispatch validated command to the Main Engine and
-                        // await sync response.
+                        // Dispatch validated command to the asynchronous
+                        // execution engine
                         if tx.send(IpcMessage { cmd, reply: reply_tx }).is_ok() {
-                            if let Ok(response) = reply_rx.recv() {
+                            /*
+                             * THREAD DEADLOCK PREVENTION
+                             * We bound the wait time for the main engine's
+                             * response. If a kernel eBPF map toggle stalls or
+                             * the engine panics, this timeout ensures the IPC
+                             * thread recovers gracefully and signals the
+                             * failure back to the CLI user.
+                             */
+                            if let Ok(response) = reply_rx.recv_timeout(Duration::from_secs(5)) {
                                 let _ = stream.write_all(response.as_bytes());
+                            } else {
+                                let _ = stream.write_all(b"ERROR: Engine operation timed out or panicked.\n");
                             }
                         }
                     }
