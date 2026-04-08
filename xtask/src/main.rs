@@ -42,7 +42,11 @@ fn main() {
 
     let result = match task.as_deref() {
         Some("prepare-image") => prepare_test_image(),
-        Some("test") => run_tests(args.next().as_deref()),
+        Some("test") => {
+            let category = args.next();
+            let specific_test = args.next();
+            run_tests(category.as_deref(), specific_test.as_deref())
+        },
         _ => {
             eprintln!("Bouclier Bleu Build & Test Pipeline");
             eprintln!("Usage:");
@@ -51,6 +55,7 @@ fn main() {
             eprintln!("  cargo xtask test component          - Runs all module component tests in VM");
             eprintln!("  cargo xtask test integration        - Runs all integration tests in VM");
             eprintln!("  cargo xtask test performance        - Runs all performance benchmarks in VM (TODO)");
+            eprintln!("  cargo xtask test <category> [test]  - Runs a specific test file within a category");
             eprintln!("  cargo xtask test <fuzz/threat>      - Restricted Private Suites");
             exit(1);
         }
@@ -76,7 +81,7 @@ impl Drop for VmGuard {
 }
 
 /// Primary orchestration sequence for test execution.
-fn run_tests(category: Option<&str>) -> TaskResult<()> {
+fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()> {
     prepare_test_image()?;
 
     // Bind the VM lifecycle strictly to this function's scope.
@@ -89,31 +94,40 @@ fn run_tests(category: Option<&str>) -> TaskResult<()> {
 
     match category {
         Some("component") => {
-            let (res, time) = run_component_tests()?;
+            let (res, time) = run_component_tests(target_test)?;
             all_results.extend(res);
             cumulative_restore_time += time;
         },
         Some("integration") => {
-            let (res, time) = run_integration_tests()?;
+            let (res, time) = run_integration_tests(target_test)?;
             all_results.extend(res);
             cumulative_restore_time += time;
         },
         Some("performance") => {
-            let (res, time) = run_performance_tests()?;
+            let (res, time) = run_performance_tests(target_test)?;
             all_results.extend(res);
             cumulative_restore_time += time;
         },
+        // TODO: SECURITY RISK
+        // The `threat` test suite is designed to execute
+        // real malware payloads. Currently, the Incus VM provisions a default
+        // bridged network interface (incusbr0) which poses a critical risk of
+        // lateral network movement, worm propagation, or C2 exfiltration.
+        // DO NOT enable local execution of this suite until strict network
+        // air-gapping is implemented (e.g., stripping the eth0 device via
+        // `incus config device remove`) during the VM provisioning phase in
+        // `launch_instance()`.
         Some("fuzzing") | Some("threat") => {
             println!("[WARN] The '{}' test suite is private and restricted.", category.unwrap());
         }
         None | Some("all") => {
             println!("\n[INFO] Initiating public Bouclier Bleu test suites...");
 
-            let (c_res, c_time) = run_component_tests()?;
+            let (c_res, c_time) = run_component_tests(None)?;
             all_results.extend(c_res);
             cumulative_restore_time += c_time;
             
-            let (i_res, i_time) = run_integration_tests()?;
+            let (i_res, i_time) = run_integration_tests(None)?;
             all_results.extend(i_res);
             cumulative_restore_time += i_time;
         }
@@ -139,7 +153,7 @@ fn run_tests(category: Option<&str>) -> TaskResult<()> {
 
 // --- Test Suite Runners ---
 
-fn run_component_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
+fn run_component_tests(target_test: Option<&str>) -> TaskResult<(Vec<TestRecord>, Duration)> {
     let comp_dir = project_root().join("tests/component");
     let mut results = Vec::new();
     let mut total_restore_time = Duration::ZERO;
@@ -156,6 +170,12 @@ fn run_component_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
 
         if path.is_file() && path.extension().unwrap_or_default() == "sh" {
             let test_name = path.file_name().unwrap().to_string_lossy();
+
+            if let Some(target) = target_test {
+                if test_name != target {
+                    continue;
+                }
+            }
             
             println!("\n[INFO] Reverting environment to clean state for {}...", test_name);
             let restore_dur = restore_vm_snapshot()?;
@@ -186,7 +206,7 @@ fn run_component_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
     Ok((results, total_restore_time))
 }
 
-fn run_integration_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
+fn run_integration_tests(target_test: Option<&str>) -> TaskResult<(Vec<TestRecord>, Duration)> {
     let int_dir = project_root().join("tests/integration");
     let mut results = Vec::new();
     let mut total_restore_time = Duration::ZERO;
@@ -203,13 +223,20 @@ fn run_integration_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
 
         if path.is_file() && path.extension().unwrap_or_default() == "rs" {
             let test_name = path.file_stem().unwrap().to_string_lossy();
+            let full_name = path.file_name().unwrap().to_string_lossy();
+
+            if let Some(target) = target_test {
+                if test_name != target && full_name != target {
+                    continue;
+                }
+            }
             
             println!("\n[INFO] Reverting environment to clean state for {}...", test_name);
             let restore_dur = restore_vm_snapshot()?;
             total_restore_time += restore_dur;
 
             println!("[INFO] Executing {}...", test_name);
-            let cmd = format!("cargo test --release --test {}", test_name);
+            let cmd = format!("cargo test -q --release --test {}", test_name);
             
             let start_time = Instant::now();
             let passed = incus_exec(&cmd).is_ok();
@@ -233,7 +260,7 @@ fn run_integration_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
     Ok((results, total_restore_time))
 }
 
-fn run_performance_tests() -> TaskResult<(Vec<TestRecord>, Duration)> {
+fn run_performance_tests(_target_test: Option<&str>) -> TaskResult<(Vec<TestRecord>, Duration)> {
     println!("\n[INFO] Executing Performance Benchmarks (System Overhead Analysis)...");
     
     // TODO: Implement standardized system overhead and latency benchmarks.
@@ -383,7 +410,7 @@ fn compile_workspace() -> TaskResult<()> {
     
     // Purging target/ mitigates edge cases where the host's immutable path
     // configs inadvertently override the Ubuntu guest's linker paths.
-    incus_exec("cargo clean && cargo build --release --workspace --all-targets")?;
+    incus_exec("cargo clean -q && cargo build -q --release --workspace --all-targets")?;
 
     // Ensures object files residing in the kernel's volatile memory cache are
     // committed to the persistent disk, preventing structural corruption
@@ -444,12 +471,12 @@ fn await_guest_agent() -> TaskResult<()> {
 fn incus_exec(command: &str) -> TaskResult<()> {
     let full_cmd = format!("source ~/.cargo/env && cd /workspace && {}", command);
     
-    let status = Command::new("incus")
+    let output = Command::new("incus")
         .args(["exec", VM_NAME, "--", "bash", "-c", &full_cmd])
-        .status()
+        .output()
         .map_err(|e| format!("Incus translation execution failure: {}", e))?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
         Err(format!("Guest operation '{}' returned a non-zero exit status.", command))
@@ -457,9 +484,9 @@ fn incus_exec(command: &str) -> TaskResult<()> {
 }
 
 fn execute_cmd(cmd: &mut Command, error_msg: &str) -> TaskResult<()> {
-    let status = cmd.status().map_err(|e| format!("{}: {}", error_msg, e))?;
-    if !status.success() {
-        return Err(format!("{} (Exit code: {})", error_msg, status.code().unwrap_or(-1)));
+    let output = cmd.output().map_err(|e| format!("{}: {}", error_msg, e))?;
+    if !output.status.success() {
+        return Err(format!("{} (Exit code: {})", error_msg, output.status.code().unwrap_or(-1)));
     }
     Ok(())
 }
