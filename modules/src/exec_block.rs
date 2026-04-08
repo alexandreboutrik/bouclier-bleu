@@ -49,7 +49,7 @@ impl ExecAlert {
          */
         let pid = u32::from_ne_bytes(pid_bytes);
 
-        let path_buffer = &data[4..4104];
+        let path_buffer = &data[4..4100];
         let null_index = path_buffer
             .iter()
             .position(|&b| b == 0)
