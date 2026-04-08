@@ -14,9 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fs::{self, Permissions, DirBuilder};
+use std::fs::{self, DirBuilder};
 use std::io::{Read, Write};
-use std::os::unix::fs::{PermissionsExt, DirBuilderExt};
+use std::os::unix::fs::{MetadataExt, DirBuilderExt};
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::thread;
@@ -49,7 +49,7 @@ pub struct IpcMessage {
 /// Spawns the CLI Control Plane listener on an isolated background thread.
 /// Exclusively handles socket connections and command parsing, delegating 
 /// actual state mutation to the main execution engine via `mpsc`.
-pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
+pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
     /*
      * SECURE DIRECTORY PATTERN (TOCTOU Mitigation)
      * We use `DirBuilder` with `mode(0o700)` to atomically create the
@@ -62,18 +62,26 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
         return;
     }
 
+    // Verify ownership and permissions in case the directory already existed
+    if let Ok(meta) = fs::metadata(SOCKET_DIR) {
+        if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
+            eprintln!("FATAL: IPC directory {} exists but has insecure permissions or ownership.", SOCKET_DIR);
+            return;
+        }
+    } else {
+        eprintln!("FATAL: Failed to verify IPC directory metadata.");
+        return;
+    }
+
     // Purge lingering inode from previous ungraceful daemon terminations.
     let _ = fs::remove_file(SOCKET_PATH);
+
+    let old_umask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o177));
 
     let listener = UnixListener::bind(SOCKET_PATH)
         .expect("FATAL: Failed to bind to Unix socket");
 
-    // Defense-in-Depth: Lock down the socket file itself, though the parent
-    // directory already prevents unauthorized traversal.
-    let sock_perms = Permissions::from_mode(0o600);
-    if let Err(e) = fs::set_permissions(SOCKET_PATH, sock_perms) {
-        eprintln!("WARNING: Failed to set strict permissions on socket file: {}", e);
-    }
+    rustix::process::umask(old_umask);
 
     thread::spawn(move || {
         println!("· IPC Control Plane listening securely on {}", SOCKET_PATH);

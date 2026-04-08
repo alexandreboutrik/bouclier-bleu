@@ -85,7 +85,7 @@ fn main() -> Result<()> {
      * the Actor Model. The main thread retains exclusive mutation rights over 
      * kernel skeletons and BPF maps, thereby preventing data races.
      */
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(128);
     ipc::start_ipc_server(tx);
     println!("· [Success] Engine is running securely.");
 

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 libbpf-rs = "0.23"
-rustix = { version = "0.38", features = ["net"] }
+rustix = { version = "0.38", features = ["net", "fs", "process"] }
 anyhow = "1.0"
 
 modules = { path = "../modules" }
