@@ -185,13 +185,15 @@ fn run_component_tests(target_test: Option<&str>) -> TaskResult<(Vec<TestRecord>
             let cmd = format!("bash tests/component/{}", test_name);
             
             let start_time = Instant::now();
+            let result = incus_exec(&cmd);
             let passed = incus_exec(&cmd).is_ok();
             let elapsed = start_time.elapsed();
 
             if passed {
                 println!("[SUCCESS] Passed: {}", test_name);
             } else {
-                eprintln!("[ERROR] Component test failed: {}", test_name);
+                eprintln!("\n[ERROR] Component test failed: {}", test_name);
+                eprintln!("{}", result.unwrap_err()); 
             }
 
             results.push(TestRecord {
@@ -239,13 +241,15 @@ fn run_integration_tests(target_test: Option<&str>) -> TaskResult<(Vec<TestRecor
             let cmd = format!("cargo test -q --release --test {}", test_name);
             
             let start_time = Instant::now();
+            let result = incus_exec(&cmd);
             let passed = incus_exec(&cmd).is_ok();
             let elapsed = start_time.elapsed();
 
             if passed {
                 println!("[SUCCESS] Passed: {}", test_name);
             } else {
-                eprintln!("[ERROR] Integration test failed: {}", test_name);
+                eprintln!("\n[ERROR] Integration test failed: {}", test_name);
+                eprintln!("{}", result.unwrap_err());
             }
 
             results.push(TestRecord {
@@ -479,7 +483,12 @@ fn incus_exec(command: &str) -> TaskResult<()> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!("Guest operation '{}' returned a non-zero exit status.", command))
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+                "Guest command failed (Exit code: {:?})\n\n--- STDOUT ---\n{}\n--- STDERR ---\n{}", 
+            output.status.code(), stdout, stderr
+        ))
     }
 }
 

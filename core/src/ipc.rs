@@ -28,6 +28,7 @@ const SOCKET_DIR: &str = "/var/run/bouclier-bleu";
 const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 /// Strongly typed RPC commands strictly parsed from raw socket payloads.
+///
 /// This enum acts as the serialization boundary, ensuring only syntactically
 /// valid directives propagate to the core execution engine.
 pub enum DaemonCmd {
@@ -38,6 +39,7 @@ pub enum DaemonCmd {
 }
 
 /// Represents an encapsulated transaction across the IPC boundary.
+///
 /// Includes a single-use transmission channel (`mpsc::Sender`) allowing the 
 /// asynchronous core engine to route execution results back to the synchronous 
 /// socket thread.
@@ -47,22 +49,21 @@ pub struct IpcMessage {
 }
 
 /// Spawns the CLI Control Plane listener on an isolated background thread.
+///
 /// Exclusively handles socket connections and command parsing, delegating 
 /// actual state mutation to the main execution engine via `mpsc`.
 pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
     /*
-     * SECURE DIRECTORY PATTERN (TOCTOU Mitigation)
-     * We use `DirBuilder` with `mode(0o700)` to atomically create the
-     * directory with root-only permissions. This completely eliminates the
-     * microsecond world-readable window that occurs if permissions are locked
-     * down after creation, preventing FD-pinning attacks.
+     * SECURITY: TOCTOU (Time-of-Check to Time-of-Use) Mitigation
+     * We atomically create the directory with root-only permissions (0o700). 
+     * This eliminates the microsecond world-readable window that occurs if 
+     * permissions are locked down *after* creation.
      */
     if let Err(e) = DirBuilder::new().recursive(true).mode(0o700).create(SOCKET_DIR) {
         eprintln!("FATAL: Failed to construct secure IPC directory: {}", e);
         return;
     }
 
-    // Verify ownership and permissions in case the directory already existed
     if let Ok(meta) = fs::metadata(SOCKET_DIR) {
         if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
             eprintln!("FATAL: IPC directory {} exists but has insecure permissions or ownership.", SOCKET_DIR);
@@ -73,9 +74,7 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
         return;
     }
 
-    // Purge lingering inode from previous ungraceful daemon terminations.
     let _ = fs::remove_file(SOCKET_PATH);
-
     let old_umask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o177));
 
     let listener = UnixListener::bind(SOCKET_PATH)
@@ -156,8 +155,6 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
 
                         let (reply_tx, reply_rx) = mpsc::channel();
 
-                        // Dispatch validated command to the asynchronous
-                        // execution engine
                         if tx.send(IpcMessage { cmd, reply: reply_tx }).is_ok() {
                             /*
                              * THREAD DEADLOCK PREVENTION

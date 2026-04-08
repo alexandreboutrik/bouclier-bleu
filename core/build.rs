@@ -40,16 +40,20 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").
         expect("OUT_DIR must be set"));
 
-    // Restrict build cache invalidation to the eBPF source directory.
-    // This prevents expensive recompilations of the Rust workspace unless
-    // the underlying C code or headers actually change.
+    /*
+     * Restrict build cache invalidation to the eBPF source directory.
+     * This prevents expensive recompilations of the Rust workspace unless
+     * the underlying C code or headers actually change.
+     */
     println!("cargo:rerun-if-changed=../bpf");
 
-    // Replicate the 'include/' directory structure within Cargo's isolated
-    // OUT_DIR. The eBPF C code strictly includes "include/vmlinux.h". By
-    // staging it here and passing -I<OUT_DIR> to Clang, we satisfy the
-    // compiler's relative path resolution without mutating the tracked Git
-    // repository.
+    /*
+     * Replicate the 'include/' directory structure within Cargo's isolated
+     * OUT_DIR. The eBPF C code strictly includes "include/vmlinux.h". By
+     * staging it here and passing -I<OUT_DIR> to Clang, we satisfy the
+     * compiler's relative path resolution without mutating the tracked Git
+     * repository.
+     */
     let out_include_dir = out_dir.join("include");
     if !out_include_dir.exists() {
         fs::create_dir_all(&out_include_dir)
@@ -66,11 +70,13 @@ fn main() {
             .expect("Failed to construct ../bpf/include directory");
     }
     
-    // Dynamically dump the BPF Type Format (BTF) from the currently running
-    // kernel into a fresh vmlinux.h. This architectural choice ensures the
-    // eBPF objects are compiled against the exact memory layouts of the host
-    // system, enabling CO-RE (Compile Once - Run Everywhere) without
-    // committing a 100k+ line header.
+    /*
+     * Dynamically dump the BPF Type Format (BTF) from the currently running
+     * kernel into a fresh vmlinux.h. This architectural choice ensures the
+     * eBPF objects are compiled against the exact memory layouts of the host
+     * system, enabling CO-RE (Compile Once - Run Everywhere) without
+     * committing a 100k+ line header.
+     */
     let bpftool_out = Command::new("bpftool")
         .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"])
         .output()
@@ -91,6 +97,7 @@ fn main() {
     let mut module_includes = Vec::new();
     let mut load_arms       = Vec::new();
     let mut toggle_arms     = Vec::new();
+    let mut get_map_arms    = Vec::new();
     let mut module_names    = Vec::new();
 
     let clang_include_bpf = format!("-I{}", bpf_include_dir.display());
@@ -108,11 +115,13 @@ fn main() {
                 let skel_name = format!("{}.skel.rs", base_name);
                 let out_path = out_dir.join(&skel_name);
 
-                // Orchestrate the eBPF compilation pipeline:
-                // 1. Invokes Clang to compile the C source into a BPF ELF
-                // object.
-                // 2. Invokes bpftool to generate strongly-typed Rust bindings
-                // (skeletons) that safely wrap the BPF maps and programs.
+                /*
+                 * Orchestrate the eBPF compilation pipeline:
+                 * 1. Invokes Clang to compile the C source into a BPF ELF
+                 * object.
+                 * 2. Invokes bpftool to generate strongly-typed Rust bindings
+                 * (skeletons) that safely wrap the BPF maps and programs.
+                 */
                 SkeletonBuilder::new()
                     .source(&path)
                     .clang_args([
@@ -123,11 +132,13 @@ fn main() {
                     .unwrap_or_else(|e| panic!("Failed to compile {}: {:?}",
                             file_name, e));
 
-                // Leverage AST generation (via the `quote` crate) rather than
-                // raw string concatenation to build the loader module. This
-                // guarantees that the injected Rust code is syntactically
-                // sound and resilient to complex macro expansions at compile
-                // time.
+                /*
+                 * Leverage AST generation (via the `quote` crate) rather than
+                 * raw string concatenation to build the loader module. This
+                 * guarantees that the injected Rust code is syntactically
+                 * sound and resilient to complex macro expansions at compile
+                 * time.
+                 */
                 let mod_ident = format_ident!("{}", base_name);
                 let builder_ident = format_ident!("{}SkelBuilder", snake_to_camel(base_name));
                 let skel_ident = format_ident!("{}Skel", snake_to_camel(base_name));
@@ -141,9 +152,11 @@ fn main() {
 
                 module_names.push(base_name.to_string());
                     
-                // Generate the state machine transitions for dynamically
-                // attaching the BPF hooks into the kernel during daemon
-                // initialization.
+                /*
+                 * Generate the state machine transitions for dynamically
+                 * attaching the BPF hooks into the kernel during daemon
+                 * initialization.
+                 */
                 load_arms.push(quote! {
                     stringify!(#mod_ident) => {
                         let builder = #mod_ident::#builder_ident::default();
@@ -155,7 +168,7 @@ fn main() {
                 });
 
                 /*
-                 * DYNAMIC MAP RESOLUTION:
+                 * DYNAMIC MAP RESOLUTION
                  * Instead of guessing if `state_map` exists by parsing C code, 
                  * we generate logic that dynamically attempts to look up the
                  * map by name within the libbpf object at runtime. If it
@@ -181,6 +194,23 @@ fn main() {
                             Ok(())
                         } else {
                             bail!("Type downcast failed for module skeleton '{}'", name);
+                        }
+                    }
+                });
+
+                /*
+                 * DYNAMIC MAP EXTRACTION
+                 * Generates a safe downcast attempt for this specific module
+                 * skeleton. If the downcast succeeds, it utilizes the
+                 * underlying libbpf `Object` to dynamically resolve the
+                 * requested map by its string name.
+                 */
+                get_map_arms.push(quote! {
+                    if let Some(downcasted_skel) = skel.downcast_ref::<#mod_ident::#skel_ident>() {
+                        if let Some(map) = downcasted_skel.obj.map(map_name) {
+                            return Ok(map);
+                        } else {
+                            bail!("Map '{}' not found in module skeleton", map_name);
                         }
                     }
                 });
@@ -220,6 +250,15 @@ fn main() {
                 #(#toggle_arms)*
                 _ => bail!("Unknown eBPF module '{}'", name),
             }
+        }
+
+        /// Dynamically retrieves a reference to a BPF Map by its string
+        /// identifier. Iterates through available skeleton types to
+        /// successfully downcast the `Any` trait object, eliminating the need
+        /// to hardcode map accessors in userland.
+        pub fn get_map<'a>(skel: &'a dyn Any, map_name: &str) -> Result<&'a libbpf_rs::Map> {
+            #(#get_map_arms)*
+            bail!("Type downcast failed or map '{}' not found across all registered modules.", map_name)
         }
     };
 

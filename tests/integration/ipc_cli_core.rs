@@ -80,9 +80,11 @@ fn test_ipc_disable_command() {
     let mut stream = UnixStream::connect(SOCKET_PATH)
         .expect("Failed to establish IPC channel to core daemon.");
 
-    // Dispatch state mutation RPC directly to the control plane, intentionally
-    // circumventing the CLI abstraction layer to test the socket's raw payload
-    // parsing.
+    /*
+     * Dispatch state mutation RPC directly to the control plane, intentionally
+     * circumventing the CLI abstraction layer to test the socket's raw payload
+     * parsing.
+     */
     stream.write_all(b"DISABLE exec_block")
         .expect("Failed to transmit IPC payload.");
 
@@ -92,7 +94,7 @@ fn test_ipc_disable_command() {
     stream.read_to_string(&mut response).expect("Failed to read IPC response stream.");
 
     assert!(
-        response.contains("SUCCESS: Defense module 'exec_block' has been DISABLED via state_map synchronization"),
+        response.contains("SUCCESS: Defense module 'exec_block' DISABLED via state synchronization"),
         "Unexpected IPC response payload: {}",
         response
     );

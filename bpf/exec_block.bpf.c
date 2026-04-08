@@ -20,6 +20,8 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#include "headers/module_core.h"
+
 char LICENSE[] SEC("license") = "GPL";
 
 #define EPERM 1
@@ -27,17 +29,28 @@ char LICENSE[] SEC("license") = "GPL";
 #define PATH_MAX 4096
 #define ENAMETOOLONG 36
 
-/*
- * Canonical Path Resolution Buffer
- * eBPF programs are strictly constrained by a 512-byte stack limit, making 
- * on-stack allocations of PATH_MAX (4096 bytes) impossible. To securely 
- * resolve absolute execution paths without truncation or triggering 
- * -ENAMETOOLONG fail-open vulnerabilities, we allocate a dedicated memory 
- * segment.
- * Utilizing a BPF_MAP_TYPE_PERCPU_ARRAY provides a lock-free, zero-contention
- * memory region dedicated to each CPU core. This ensures that concurrent
- * execve syscalls do not overwrite each other's path resolution buffers 
- * while maintaining O(1) latency.
+/**
+ * struct exec_alert - Telemetry Payload Contract
+ * @pid: The Process ID originating the execve attempt.
+ * @path: The canonicalized execution path.
+ *
+ * Memory layout must strictly mirror the `ExecAlert` struct in the Rust
+ * userland to ensure safe zero-copy deserialization.
+ */
+struct exec_alert {
+    __u32 pid;
+    char path[PATH_MAX];
+};
+
+/**
+ * path_buffer_map - Canonical Path Resolution Buffer
+ *
+ * eBPF programs are strictly constrained by a 512-byte stack limit. To
+ * securely resolve absolute execution paths (PATH_MAX = 4096) without
+ * triggering -ENAMETOOLONG fail-open vulnerabilities, we allocate a dedicated
+ * memory segment. We utilize BPF_MAP_TYPE_PERCPU_ARRAY to provide a lock-free,
+ * zero-contention memory region dedicated to each CPU core, maintaining O(1)
+ * latency.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -46,34 +59,18 @@ struct {
     __uint(max_entries, 1);
 } path_buffer_map SEC(".maps");
 
-/*
- * Control Plane Synchronization Map
- * Facilitates real-time state synchronization between the Rust userland daemon
- * and this kernel module. A value of 0 indicates the module is 
- * administratively disabled, while 1 indicates active enforcement.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);
-    __type(value, __u32);
-    __uint(max_entries, 1);
-} state_map SEC(".maps");
+BOUCLIER_MODULE_ALERTS;
+BOUCLIER_MODULE_STATE_MAP;
 
 SEC("lsm/bprm_check_security")
 int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
     __u32 key = 0;
-    __u32 *is_active;
     struct file *file;
     char *path_buf;
     long len;
+    struct exec_alert *event;
 
-    /*
-     * Verify administrative state. We fail-open (allow execution) if the map
-     * lookup fails or if the policy is explicitly disabled by the control
-	 * plane.
-     */
-    is_active = bpf_map_lookup_elem(&state_map, &key);
-    if (!is_active || *is_active == 0) {
+	if (!is_module_active(&state_map)) {
         return 0;
     }
 
@@ -198,12 +195,18 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
     return 0;
 
 block_exec:
-    /*
-     * FIXME: Production implementation required.
-     * Telemetry should be routed via a BPF RingBuffer to userland for SIEM
-     * ingestion. bpf_printk is utilized temporarily for PoC validation but
-     * risks trace_pipe saturation and high CPU overhead under load.
-     */
-    bpf_printk("Bouclier Bleu [BLOCK]: Executed from protected path: %s\n", path_buf);
+    event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+    
+    if (event) {
+        // populate the Process ID (Higher 32 bits are TGID, lower are PID)
+        event->pid = bpf_get_current_pid_tgid() >> 32;
+
+		// bpf_probe_read_kernel_str guarantees safe memory access and enforces
+        // null-termination within our PATH_MAX bounds.
+        bpf_probe_read_kernel_str(event->path, PATH_MAX, path_buf);
+
+        bpf_ringbuf_submit(event, 0);
+    }
+
     return -EPERM;
 }
