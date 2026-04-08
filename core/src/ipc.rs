@@ -14,9 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fs::{self, Permissions};
+use std::fs::{self, Permissions, DirBuilder};
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, DirBuilderExt};
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::thread;
@@ -52,22 +52,13 @@ pub struct IpcMessage {
 pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
     /*
      * SECURE DIRECTORY PATTERN (TOCTOU Mitigation)
-     * To safely bind a Unix socket without exposing a microsecond window of 
-     * world-readability (Time-of-Check to Time-of-Use race condition), we
-     * utilize a strictly permissioned parent directory.
-     * The Linux VFS layer evaluates path permissions top-down. By restricting
-     * the directory to root (0700) BEFORE binding the socket inside it, we
-     * guarantee the socket is completely inaccessible to unprivileged
-     * processes from the exact moment of its creation.
+     * We use `DirBuilder` with `mode(0o700)` to atomically create the
+     * directory with root-only permissions. This completely eliminates the
+     * microsecond world-readable window that occurs if permissions are locked
+     * down after creation, preventing FD-pinning attacks.
      */
-    if let Err(e) = fs::create_dir_all(SOCKET_DIR) {
+    if let Err(e) = DirBuilder::new().recursive(true).mode(0o700).create(SOCKET_DIR) {
         eprintln!("FATAL: Failed to construct secure IPC directory: {}", e);
-        return;
-    }
-
-    let dir_perms = Permissions::from_mode(0o700);
-    if let Err(e) = fs::set_permissions(SOCKET_DIR, dir_perms) {
-        eprintln!("FATAL: Failed to enforce 0700 permissions on IPC directory: {}", e);
         return;
     }
 
@@ -127,9 +118,20 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
                         continue;
                     }
 
-                    let mut buffer = [0; 1024];
-                    if let Ok(bytes_read) = stream.read(&mut buffer) {
-                        let command_str = String::from_utf8_lossy(&buffer[..bytes_read]).trim().to_string();
+                    let mut command_str = String::new();
+
+                    /*
+                     * STREAM TRUNCATION & Anti-OOM MITIGATION
+                     * Sockets are streams; data can arrive fragmented. We read
+                     * until the client signals EOF, but strictly cap the read
+                     * at 1024 bytes using `.take()` to prevent memory
+                     * exhaustion attacks from malicious clients attempting to
+                     * send infinite data.
+                     */
+                    if let Ok(bytes_read) = (&mut stream).take(1024).read_to_string(&mut command_str) {
+                        if bytes_read == 0 { continue; }
+                        
+                        let command_str = command_str.trim().to_string();
                         let parts: Vec<&str> = command_str.split_whitespace().collect();
                         if parts.is_empty() { continue; }
 

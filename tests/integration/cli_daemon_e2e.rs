@@ -20,7 +20,7 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const SOCKET_PATH: &str = "/var/run/bouclier-bleu.sock";
+const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 /// RAII guard ensuring deterministic lifecycle management of the core daemon.
 /// Prevents orphaned background processes and socket file lock contentions 

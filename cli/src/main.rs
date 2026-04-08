@@ -16,10 +16,11 @@
 
 use clap::{Parser, Subcommand};
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::process;
 
-const SOCKET_PATH: &str = "/var/run/bouclier-bleu.sock";
+const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 #[derive(Parser)]
 #[command(name = "bouclier", about = "Bouclier Bleu Control Plane", version)]
@@ -60,6 +61,15 @@ fn send_command_to_daemon(cmd: &str) {
                 eprintln!("Failed to send command over IPC: {}", e);
                 return;
             }
+
+            /*
+             * STREAM FRAMING
+             * Explicitly signal the end of the transmission to the daemon.
+             * This frames the IPC message, preventing stream truncation errors
+             * and allowing the daemon's `read_to_string` to unblock
+             * immediately without waiting for a timeout.
+             */
+            let _ = stream.shutdown(Shutdown::Write);
 
             // Await synchronous confirmation from the core daemon's Actor loop
             let mut response = String::new();

@@ -15,13 +15,14 @@
 // limitations under the License.
 
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const SOCKET_PATH: &str = "/var/run/bouclier-bleu.sock";
+const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 /// RAII guard ensuring deterministic lifecycle management of the core daemon
 /// during integration testing. Guarantees process termination and resource
@@ -84,6 +85,8 @@ fn test_ipc_disable_command() {
     // parsing.
     stream.write_all(b"DISABLE exec_block")
         .expect("Failed to transmit IPC payload.");
+
+    let _ = stream.shutdown(Shutdown::Write);
 
     let mut response = String::new();
     stream.read_to_string(&mut response).expect("Failed to read IPC response stream.");
