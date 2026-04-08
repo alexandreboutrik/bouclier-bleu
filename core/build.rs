@@ -155,40 +155,28 @@ fn main() {
                 });
 
                 /*
-                 * HEURISTIC AST GENERATION:
-                 * Not all eBPF modules require a Control Plane `state_map`
-                 * (e.g., simple telemetry loggers). We scan the C source code
-                 * here to check if `state_map` is declared.
-                 * If present, we generate the Rust map update logic. If
-                 * absent, we omit it, preventing `rustc` from panicking over
-                 * missing struct methods in the skeleton.
+                 * DYNAMIC MAP RESOLUTION:
+                 * Instead of guessing if `state_map` exists by parsing C code, 
+                 * we generate logic that dynamically attempts to look up the
+                 * map by name within the libbpf object at runtime. If it
+                 * doesn't exist (e.g., telemetry-only modules), it gracefully
+                 * bypasses the update.
                  */
-                let c_code = fs::read_to_string(&path)
-                    .unwrap_or_else(|_| String::new());
-                
-                let (map_update_logic, skeleton_binding) = if c_code.contains("state_map") {
-                    (quote! {
+                let map_update_logic = quote! {
+                    if let Some(state_map) = skel.obj.map("state_map") {
                         let key: [u8; 4] = 0u32.to_ne_bytes();
                         let val: [u8; 4] = if active { 1u32 } else { 0u32 }.to_ne_bytes();
                         
-                        // Execute high-speed BPF Map update.
-                        s.maps().state_map().update(&key, &val, MapFlags::ANY)
+                        state_map.update(&key[..], &val[..], MapFlags::ANY)
                             .context(concat!("Failed to synchronize eBPF state_map for ", stringify!(#mod_ident)))?;
-                    }, quote! { s })
-                } else {
-                    (quote! {
-                        // This eBPF module does not declare a `state_map`. 
-                        // Silently bypass synchronization as there is no
-                        // state to mutate.
-                    }, quote! { _s })
+                    }
                 };
 
                 // Generate dynamic dispatch arms for map state synchronization
                 toggle_arms.push(quote! {
                     stringify!(#mod_ident) => {
-                        // Safely downcast the generic Any trait object into
-                        // the strongly typed skeleton
-                        if let Some(#skeleton_binding) = skel.downcast_ref::<#mod_ident::#skel_ident>() {
+                        // Safely downcast the generic Any trait object
+                        if let Some(skel) = skel.downcast_ref::<#mod_ident::#skel_ident>() {
                             #map_update_logic
                             Ok(())
                         } else {
