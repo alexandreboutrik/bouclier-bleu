@@ -113,6 +113,23 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
         return 0;
     }
 
+	/*
+     * TODO: Mount Namespace & Bind-Mount Evasion Mitigation
+     * Threat Model: The current path heuristics rely on string prefix matching
+     * (e.g., "/tmp/"). Advanced attackers can trivially bypass this by
+	 * creating a new user/mount namespace (`unshare -Ur -m`) and bind-mounting
+	 * the world-writable directory to an unmonitored path (e.g.,
+	 * `~/safe_tmp`). `bpf_d_path` resolves relative to the process's current
+	 * namespace root, causing the string-matching heuristic to fail-open.
+     * We must therefore deprecate string-based path heuristics. 
+     * The Rust userland daemon should resolve the exact `inode` number and 
+     * `s_dev` (superblock device ID) of the target protected directories at
+	 * boot. These hardware-level identifiers should be passed to the kernel 
+     * via a new eBPF Map. This hook will then extract `file->f_inode->i_ino` 
+     * and `file->f_inode->i_sb->s_dev` to perform cryptographic-grade path 
+     * validation that cannot be spoofed by namespace manipulation.
+     */
+
     /*
      * Path Heuristics Verification
      * Target execution attempts originating from world-writable directories
