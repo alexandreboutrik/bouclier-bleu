@@ -129,13 +129,15 @@ fn main() -> Result<()> {
                         match bpf_loader::load_module(&target) {
                             Ok(skel) => {
                                 if let Err(e) = bpf_loader::set_module_state(&*skel, &target, true) {
-                                    println!("· [Warning] Failed to set initial state_map for {}: {}", target, e);
-                                }
-                                active_skeletons.insert(target.clone(), skel);
-                                if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
+                                    // Evaluate to the error string directly without using `return`
+                                    format!("ERROR: Failed to set kernel state for {}. Aborting enablement: {}\n", target, e)
+                                } else {
+                                    active_skeletons.insert(target.clone(), skel);
+                                    if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == target) {
                                     user_mod.toggle(true);
+                                    }
+                                    format!("SUCCESS: Defense module '{}' has been ENABLED and ATTACHED\n", target)
                                 }
-                                format!("SUCCESS: Defense module '{}' has been ENABLED and ATTACHED\n", target)
                             }
                             Err(e) => format!("ERROR: Failed to load module '{}': {}\n", target, e),
                         }
