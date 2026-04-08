@@ -94,7 +94,7 @@ fn main() -> Result<()> {
 
     // Main Engine Event Loop
     loop {
-        if let Ok(msg) = rx.try_recv() {
+        while let Ok(msg) = rx.try_recv() {
             let response = match msg.cmd {
                 
                 ipc::DaemonCmd::Status => "Bouclier Bleu EDR Status: Kernel Engine Running\n".to_string(),

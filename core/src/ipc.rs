@@ -118,7 +118,7 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
                         continue;
                     }
 
-                    let mut command_str = String::new();
+                    let mut buffer = Vec::new();
 
                     /*
                      * STREAM TRUNCATION & Anti-OOM MITIGATION
@@ -128,10 +128,10 @@ pub fn start_ipc_server(tx: mpsc::Sender<IpcMessage>) {
                      * exhaustion attacks from malicious clients attempting to
                      * send infinite data.
                      */
-                    if let Ok(bytes_read) = (&mut stream).take(1024).read_to_string(&mut command_str) {
+                    if let Ok(bytes_read) = (&mut stream).take(1024).read_to_end(&mut buffer) {
                         if bytes_read == 0 { continue; }
                         
-                        let command_str = command_str.trim().to_string();
+                        let command_str = String::from_utf8_lossy(&buffer).trim().to_string();
                         let parts: Vec<&str> = command_str.split_whitespace().collect();
                         if parts.is_empty() { continue; }
 
