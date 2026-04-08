@@ -139,41 +139,44 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
      */
 
     // /tmp/
-    if (path_buf[0] == '/' && path_buf[1] == 't' && path_buf[2] == 'm' && 
-        path_buf[3] == 'p' && path_buf[4] == '/')
+    if (len >= 5 && path_buf[0] == '/' && path_buf[1] == 't' &&
+		path_buf[2] == 'm' && path_buf[3] == 'p' && path_buf[4] == '/')
         goto block_exec;
 
     // /var/tmp/
-    if (path_buf[0] == '/' && path_buf[1] == 'v' && path_buf[2] == 'a' && 
-        path_buf[3] == 'r' && path_buf[4] == '/' && path_buf[5] == 't' && 
-        path_buf[6] == 'm' && path_buf[7] == 'p' && path_buf[8] == '/')
+    if (len >= 9 && path_buf[0] == '/' && path_buf[1] == 'v' &&
+		path_buf[2] == 'a' && path_buf[3] == 'r' && path_buf[4] == '/' &&
+		path_buf[5] == 't' && path_buf[6] == 'm' && path_buf[7] == 'p' &&
+		path_buf[8] == '/')
         goto block_exec;
 
     // /dev/shm/
-    if (path_buf[0] == '/' && path_buf[1] == 'd' && path_buf[2] == 'e' && 
-        path_buf[3] == 'v' && path_buf[4] == '/' && path_buf[5] == 's' && 
-        path_buf[6] == 'h' && path_buf[7] == 'm' && path_buf[8] == '/')
+    if (len >= 9 && path_buf[0] == '/' && path_buf[1] == 'd' &&
+		path_buf[2] == 'e' && path_buf[3] == 'v' && path_buf[4] == '/' &&
+		path_buf[5] == 's' && path_buf[6] == 'h' && path_buf[7] == 'm' &&
+		path_buf[8] == '/')
         goto block_exec;
 
 	// /var/crash/ (Apport dump staging)
-    if (path_buf[0] == '/' && path_buf[1] == 'v' && path_buf[2] == 'a' && 
-        path_buf[3] == 'r' && path_buf[4] == '/' && path_buf[5] == 'c' && 
-        path_buf[6] == 'r' && path_buf[7] == 'a' && path_buf[8] == 's' && 
-        path_buf[9] == 'h' && path_buf[10] == '/')
+    if (len >= 11 && path_buf[0] == '/' && path_buf[1] == 'v' &&
+		path_buf[2] == 'a' && path_buf[3] == 'r' && path_buf[4] == '/' &&
+		path_buf[5] == 'c' && path_buf[6] == 'r' && path_buf[7] == 'a' &&
+		path_buf[8] == 's' && path_buf[9] == 'h' && path_buf[10] == '/')
         goto block_exec;
 
     // /dev/mqueue/ (POSIX message queues)
-    if (path_buf[0] == '/' && path_buf[1] == 'd' && path_buf[2] == 'e' && 
-        path_buf[3] == 'v' && path_buf[4] == '/' && path_buf[5] == 'm' && 
-        path_buf[6] == 'q' && path_buf[7] == 'u' && path_buf[8] == 'e' && 
-        path_buf[9] == 'u' && path_buf[10] == 'e' && path_buf[11] == '/')
+    if (len >= 12 && path_buf[0] == '/' && path_buf[1] == 'd' &&
+		path_buf[2] == 'e' && path_buf[3] == 'v' && path_buf[4] == '/' &&
+		path_buf[5] == 'm' && path_buf[6] == 'q' && path_buf[7] == 'u' &&
+		path_buf[8] == 'e' && path_buf[9] == 'u' && path_buf[10] == 'e' &&
+		path_buf[11] == '/')
         goto block_exec;
 
     // /run/user/ (User-specific volatile runtime)
-    if (path_buf[0] == '/' && path_buf[1] == 'r' && path_buf[2] == 'u' && 
-        path_buf[3] == 'n' && path_buf[4] == '/' && path_buf[5] == 'u' && 
-        path_buf[6] == 's' && path_buf[7] == 'e' && path_buf[8] == 'r' && 
-        path_buf[9] == '/')
+    if (len >= 10 && path_buf[0] == '/' && path_buf[1] == 'r' &&
+		path_buf[2] == 'u' && path_buf[3] == 'n' && path_buf[4] == '/' &&
+		path_buf[5] == 'u' && path_buf[6] == 's' && path_buf[7] == 'e' &&
+		path_buf[8] == 'r' && path_buf[9] == '/')
         goto block_exec;
 
 	/*
