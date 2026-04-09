@@ -242,9 +242,9 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
     launch_instance()?;
     await_guest_agent()?;
     transfer_workspace()?;
+    provision_default_config()?;
     compile_workspace()?;
     inject_kernel_parameters()?;
-    provision_default_config()?;
     create_snapshot()?;
 
     println!("[SUCCESS] VM Environment provisioned and snapshotted.");

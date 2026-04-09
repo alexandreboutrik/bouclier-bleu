@@ -22,6 +22,19 @@
 use std::sync::Arc;
 
 pub mod exec_block;
+pub mod rename_entropy;
+
+/// BPF Map Dependency Injection Contract
+///
+/// Decouples the heuristic modules from the core routing engine's concrete
+/// `libbpf-rs` skeleton implementations. By providing an interface to request
+/// maps dynamically by their C-defined names, modules can securely manipulate
+/// kernel state (e.g., updating hardware-backed watchlists or toggling flags)
+/// without introducing tightly-coupled, circular dependencies between the
+/// `core` and `modules` crates.
+pub trait MapProvider {
+    fn get_map(&self, name: &str) -> Result<&libbpf_rs::Map, String>;
+}
 
 /// A zero-copy utility for safely extracting native Rust types from contiguous
 /// eBPF telemetry buffers. Prevents buffer underruns and isolates byte-shifting
@@ -92,6 +105,21 @@ pub trait SecurityModule: Send + Sync {
     /// Implementations are strictly responsible for safe deserialization to
     /// uphold memory safety across the kernel/user boundary.
     fn process_event(&self, event_data: &[u8]);
+
+    /// Post-Attach Lifecycle Hook
+    ///
+    /// Executed synchronously immediately after the eBPF skeleton is loaded
+    /// and attached to the kernel, but strictly before the asynchronous
+    /// RingBuffer polling loop begins.
+    ///
+    /// This provides a guaranteed-safe window for modules to perform
+    /// initialization logic - such as pre-populating eBPF Hash maps with
+    /// target Inodes or configuring baseline telemetry thresholds-via the
+    /// injected `MapProvider` context, eliminating race conditions during
+    /// startup.
+    fn init(&self, _provider: &dyn MapProvider) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Inversion of Control (IoC) Registry Builder.
@@ -102,6 +130,7 @@ pub trait SecurityModule: Send + Sync {
 pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
     vec![
         Arc::new(exec_block::ExecBlock::new()),
+        Arc::new(rename_entropy::RenameEntropy::new()),
         // Future expansions: e.g. Arc::new(ransomware_heur::CanaryDrop::new()),
     ]
 }
@@ -119,6 +148,7 @@ macro_rules! define_security_module {
         slug: $slug:expr,
         parser: $parser:path,
         handler: $handler:expr
+        $(, init: $init_closure:expr)?
     ) => {
         pub struct $struct_name {
             is_active: std::sync::atomic::AtomicBool,
@@ -195,6 +225,20 @@ macro_rules! define_security_module {
                         );
                     }
                 }
+            }
+
+            /*
+             * Declarative Lifecycle Execution
+             * Encapsulates the module-specific setup closure defined during
+             * macro invocation. It safely passes the map resolution context
+             * down to the heuristic logic while maintaining the strict
+             * safe-Rust boundary enforced by the IoC registry.
+             */
+            fn init(&self, _provider: &dyn crate::MapProvider) -> Result<(), String> {
+                $(
+                    $init_closure(_provider)?;
+                )?
+                Ok(())
             }
         }
     };

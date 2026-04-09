@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+libbpf-rs = "0.23"
+rustix = { version = "0.38", features = ["process"] }
+walkdir = "2.5"
