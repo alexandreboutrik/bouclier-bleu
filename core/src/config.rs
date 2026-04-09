@@ -18,6 +18,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::os::unix::fs::MetadataExt;
 
 /// Strongly typed representation of the daemon's TOML configuration.
 #[derive(Deserialize, Debug, Default)]
@@ -45,13 +46,19 @@ impl DaemonConfig {
 
         for path in search_paths {
             if Path::new(path).exists() {
+                if let Ok(metadata) = fs::metadata(path) {
+                    if metadata.uid() != 0 {
+                        panic!("FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.", path);
+                    }
+                }
+
                 match fs::read_to_string(path) {
                     Ok(contents) => match toml::from_str(&contents) {
                         Ok(config) => {
                             println!("· [Config] Loaded configuration from {}", path);
                             return config;
                         }
-                        Err(e) => eprintln!("· [Warning] Failed to parse TOML in {}: {}", path, e),
+                        Err(e) => panic!("FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.", path, e),
                     },
                     Err(e) => eprintln!("· [Warning] Failed to read {}: {}", path, e),
                 }

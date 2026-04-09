@@ -204,6 +204,7 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
     transfer_workspace()?;
     compile_workspace()?;
     inject_kernel_parameters()?;
+    provision_default_config()?;
     create_snapshot()?;
 
     println!("[SUCCESS] VM Environment provisioned and snapshotted.");
@@ -305,6 +306,16 @@ fn create_snapshot() -> TaskResult<()> {
     println!("[INFO] Capturing immutable state vector for test resets...");
     execute_cmd(Command::new("incus").args(["stop", VM_NAME]), "Failed to gracefully halt VM")?;
     execute_cmd(Command::new("incus").args(["snapshot", "create", VM_NAME, SNAPSHOT_NAME]), "Snapshot generation aborted")
+}
+
+fn provision_default_config() -> TaskResult<()> {
+    println!("[INFO] Provisioning default daemon configuration for test environment...");
+    incus_exec(
+        "mkdir -p /etc/bouclier-bleu && \
+         cp /workspace/config.toml /etc/bouclier-bleu/config.toml && \
+         chown root:root /etc/bouclier-bleu/config.toml && \
+         chmod 600 /etc/bouclier-bleu/config.toml"
+    )
 }
 
 fn restore_vm_snapshot() -> TaskResult<Duration> {
