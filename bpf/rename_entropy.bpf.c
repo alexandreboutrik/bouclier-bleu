@@ -47,7 +47,7 @@ char LICENSE[] SEC("license") = "GPL";
  */
 struct rename_alert {
     __u32 pid;
-    char dir_path[2048];
+    char dir_path[PATH_MAX];
     char file_name[256];
 };
 
@@ -88,6 +88,17 @@ struct {
     __uint(max_entries, 1);
 } scratch_map SEC(".maps");
 
+/**
+ * struct dir_id - Cross-Device Unique Directory Identifier
+ * @ino: The physical inode number.
+ * @dev: The filesystem device ID (Superblock).
+ * @_pad: Explicit padding to ensure stable 16-byte alignment.
+ */
+struct dir_id {
+    __u64 ino;
+    __u32 dev;
+    __u32 _pad;
+};
 
 /**
  * protected_dirs - Hardware-Backed Directory Watchlist
@@ -99,7 +110,7 @@ struct {
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u64);
+    __type(key, struct dir_id);
     __type(value, __u8); // 1 = protected
     __uint(max_entries, 1048576);
 } protected_dirs SEC(".maps");
@@ -182,16 +193,28 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
         return 0;
     }
 
-	__u64 target_ino = BPF_CORE_READ(new_dir, dentry, d_inode, i_ino);
-
 	/*
-     * Target Directory Validation
-     * We only calculate entropy if the target directory exists within our
-     * hardware-backed protected watchlist.
+     * Cross-Directory Migration Evasion Prevention
+     * Ransomware may attempt to evade detection by moving a target file out 
+     * of a protected directory into a temporary, unmonitored staging area 
+     * (e.g., /tmp) during the rename syscall. We validate the composite IDs 
+     * of both the source and destination directories. If either resides within
+     * the protected watchlist, the operation is subjected to entropy analysis.
      */
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &target_ino);
-    if (!is_protected || *is_protected == 0) {
-        return 0; // Not a protected directory, allow the rename
+    struct dir_id old_id = {};
+    old_id.ino = BPF_CORE_READ(old_dir, dentry, d_inode, i_ino);
+    old_id.dev = BPF_CORE_READ(old_dir, dentry, d_sb, s_dev);
+
+    struct dir_id new_id = {};
+    new_id.ino = BPF_CORE_READ(new_dir, dentry, d_inode, i_ino);
+    new_id.dev = BPF_CORE_READ(new_dir, dentry, d_sb, s_dev);
+
+    __u8 *old_protected = bpf_map_lookup_elem(&protected_dirs, &old_id);
+    __u8 *new_protected = bpf_map_lookup_elem(&protected_dirs, &new_id);
+
+    if ((!old_protected || *old_protected == 0) &&
+        (!new_protected || *new_protected == 0)) {
+        return 0; // Neither boundary is protected, safely ignore the event
     }
 
 	/*
@@ -201,7 +224,14 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
      * accesses and loop iterations will never exceed allocated bounds.
      */
     __u32 nlen = BPF_CORE_READ(new_dentry, d_name.len);
-    nlen &= 0xFF; // Clamp length for the verifier (max 255)
+
+	/*
+	 * Secure bounds clamping to satisfy the verifier without wrap-around
+	 * vulnerabilities (&= 0xFF).
+	 */
+	if (nlen > 255) {
+		nlen = 255;
+	}
     
     // Entropy math is irrelevant for very short names
     if (nlen < 8 || nlen > NAME_MAX) {
@@ -211,11 +241,14 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
     const unsigned char *name_ptr = BPF_CORE_READ(new_dentry, d_name.name);
 
 	/*
-	 * By using `bpf_probe_read_kernel` with a compile-time constant 
-     * size `sizeof(scratch->name)` (256), the BPF verifier natively accepts 
-     * the memory copy without needing mathematical proof that `nlen` is safe.
+     * Memory-Boundary Safe Extraction
+     * Utilizing `bpf_probe_read_kernel_str` instead of a fixed-size block copy 
+     * instructs the VM to halt at the null terminator or physical page
+	 * boundary. This prevents fatal `-EFAULT` drops caused by attempting to
+	 * traverse unmapped memory regions when a filename resides at the very
+	 * edge of a kernel memory page.
      */
-    bpf_probe_read_kernel(scratch->name, sizeof(scratch->name), name_ptr);
+    bpf_probe_read_kernel_str(scratch->name, sizeof(scratch->name), name_ptr);
 
 	/*
      * False-Positive Mitigation: Extension Whitelisting
@@ -316,6 +349,37 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
             bpf_ringbuf_submit(event, 0);
         }
         return -EPERM; // Block the rename atomically in the kernel
+    }
+
+    return 0;
+}
+
+/*
+ * Dynamic Watchlist Inheritance
+ * Hooks into the exit of vfs_mkdir. If a new directory is created inside a
+ * currently protected directory, we automatically add the new child's inode to
+ * the protected_dirs map.
+ */
+SEC("fexit/vfs_mkdir")
+int BPF_PROG(rename_entropy_vfs_mkdir_exit, struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry, umode_t mode, int ret) {
+    if (ret != 0 || !is_module_active(&state_map)) {
+        return 0;
+    }
+
+	struct dir_id parent_id = {};
+    parent_id.ino = BPF_CORE_READ(dir, i_ino);
+    parent_id.dev = BPF_CORE_READ(dir, i_sb, s_dev);
+
+    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &parent_id);
+
+    // Inherit protection for the new child directory
+	if (is_protected && *is_protected == 1) {
+        struct dir_id child_id = {};
+        child_id.ino = BPF_CORE_READ(dentry, d_inode, i_ino);
+        child_id.dev = BPF_CORE_READ(dentry, d_sb, s_dev);
+        
+        __u8 val = 1;
+        bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
     }
 
     return 0;

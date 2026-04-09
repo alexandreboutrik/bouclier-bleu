@@ -42,21 +42,22 @@ impl RenameAlert {
     pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         /*
          * Enforce strict structural boundaries:
-         * 4 bytes (u32 PID) + 2048 bytes (dir_path) + 256 bytes (file_name) =
-         * 2308 bytes. This validates the payload integrity before any memory
+         * 4 bytes (u32 PID) + 4096 bytes (dir_path) + 256 bytes (file_name) =
+         * 4356 bytes. This validates the payload integrity before any memory
          * reads occur.
          */
-        if data.len() < 2308 {
+        if data.len() < 4356 {
             return Err("Telemetry payload violates minimum size constraints.");
         }
 
         let mut reader = BpfReader::new(data);
 
         let pid = reader.read_u32()?;
-        let dir_path = reader.read_string(2048)?;
+        let dir_path = reader.read_string(4096)?;
         let file_name = reader.read_string(256)?;
 
-        let full_path = format!("{}{}", dir_path, file_name);
+        let clean_dir = dir_path.trim_end_matches('/');
+        let full_path = format!("{}/{}", clean_dir, file_name);
 
         Ok(Self { pid, full_path })
     }
@@ -114,9 +115,18 @@ define_security_module!(
             // proactively filter out hidden directories (e.g., `~/.cache`,
             // `~/.mozilla`) which generally contain high-churn, benign files
             // that do not require strict ransomware entropy monitoring.
+            let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
             let walker = WalkDir::new(path)
                 .into_iter()
-                .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'));
+                .filter_entry(move |e| {
+                    let file_name = e.file_name().to_string_lossy();
+
+                    if !file_name.starts_with('.') {
+                        return true;
+                    }
+
+                    critical_hidden.contains(&file_name.as_ref())
+                });
 
             for entry in walker.filter_map(|e| e.ok()) {
                 // System-level Inode Extraction
@@ -126,12 +136,36 @@ define_security_module!(
                 // file itself.
                 if entry.file_type().is_dir() {
                     if let Ok(metadata) = entry.metadata() {
-                        // Extract the physical u64 Inode and convert it to raw
-                        // bytes natively for BPF Map compatibility.
-                        let ino: u64 = metadata.ino();
-                        let key_bytes = ino.to_ne_bytes();
+                        /*
+                         * Cross-Device Composite Key Construction
+                         * Inodes are only guaranteed unique per-superblock. To
+                         * prevent map collisions in multi-disk setups, we
+                         * construct a 16-byte composite key combining the u64
+                         * Inode and the u32 Device ID. The remaining 4 bytes
+                         * act as zeroed padding to perfectly align with the
+                         * C-struct definition in kernel space.
+                         */
+                        let ino = metadata.ino();
+                        let user_dev = metadata.dev();
 
-                        // Push the subdirectory's Inode to the kernel space
+                        /*
+                         * User-to-Kernel dev_t Translation
+                         * The userland `metadata.dev()` returns a 64-bit
+                         * encoded device ID (glibc st_dev). The kernel's
+                         * `s_dev` is a 32-bit internal format ((major << 20)
+                         * | minor). We must manually decode the userland ID
+                         * and reconstruct the kernel's format to ensure eBPF
+                         * map lookups align globally.
+                         */
+                        let major = ((user_dev & 0x00000000000fff00) >> 8) | ((user_dev & 0xfffff00000000000) >> 32);
+                        let minor = (user_dev & 0x00000000000000ff) | ((user_dev & 0x00000ffffff00000) >> 12);
+                        let kernel_dev = ((major as u32) << 20) | (minor as u32);
+
+                        let mut key_bytes = [0u8; 16];
+                        key_bytes[0..8].copy_from_slice(&ino.to_ne_bytes());
+                        key_bytes[8..12].copy_from_slice(&kernel_dev.to_ne_bytes());
+                        // Bytes 12..16 inherently remain 0 as padding
+
                         bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
                             .map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
                     }

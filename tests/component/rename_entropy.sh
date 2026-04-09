@@ -56,7 +56,7 @@ function provision_env() {
     mkdir -p "${TEST_DIR_UNMONITORED}" ||
 		{ echo "[-] Failed to create unmonitored test dir."; exit 1; }
     
-    for i in {1..6}; do
+    for i in {1..8}; do
         touch "${TEST_DIR_SENSITIVE}/base_file_${i}"
     done
     touch "${TEST_DIR_UNMONITORED}/base_file_1"
@@ -195,6 +195,50 @@ function verify_mount_namespace_evasion() {
     echo "  [+] Mount namespace evasion successfully thwarted (Exit Code: ${exit_code})."
 }
 
+function verify_cross_directory_evasion() {
+    echo "  [*] Validating Cross-Directory Evasion Prevention (Expected: BLOCK/KILL)..."
+    
+    # ADVANCED THREAT: Moving a file FROM a protected directory (/var/...) 
+    # TO an unprotected directory (/tmp/...) with a high-entropy name.
+    # Before the fix, the eBPF hook only checked the destination, allowing evasion.
+    set +e
+    mv "${TEST_DIR_SENSITIVE}/base_file_7" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}_cross" > /dev/null 2>&1
+    local exit_code=$?
+    set -e
+
+    if [[ "${exit_code}" -eq 0 ]]; then
+        echo "[-] Assertion failed: Cross-directory staging evasion was permitted!"
+        exit 1
+    fi
+    echo "  [+] Cross-directory evasion successfully thwarted (Exit Code: ${exit_code})."
+}
+
+function verify_deep_path_handling() {
+    echo "  [*] Validating Deep Path (PATH_MAX) Boundary Handling (Expected: BLOCK/KILL)..."
+    
+    # Create a deeply nested directory path that intentionally exceeds the old 
+    # 2048-byte limit but stays within the safe 4096 PATH_MAX boundary.
+    local deep_dir="${TEST_DIR_SENSITIVE}"
+    for i in {1..12}; do
+        # 200 characters per loop * 12 = ~2400 character path length
+        deep_dir="${deep_dir}/$(printf 'a%.0s' {1..200})"
+    done
+    
+    mkdir -p "${deep_dir}"
+    touch "${deep_dir}/base_file_deep"
+
+    set +e
+    mv "${deep_dir}/base_file_deep" "${deep_dir}/${HIGH_ENTROPY_NAME}" > /dev/null 2>&1
+    local exit_code=$?
+    set -e
+
+    if [[ "${exit_code}" -eq 0 ]]; then
+        echo "[-] Assertion failed: Deep path rename evasion was permitted!"
+        exit 1
+    fi
+    echo "  [+] Deep path safely processed without truncation EFAULTs."
+}
+
 function verify_ipc_detachment() {
     echo "  [*] Validating dynamic LSM hook detachment..."
     
@@ -229,6 +273,8 @@ verify_short_name_bypass
 verify_extension_whitelist
 verify_unmonitored_directory
 verify_mount_namespace_evasion
+verify_cross_directory_evasion
+verify_deep_path_handling
 verify_ipc_detachment
 
 echo "  [+] Module 'rename_entropy' validation passed."
