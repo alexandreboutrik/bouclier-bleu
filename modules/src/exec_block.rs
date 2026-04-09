@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::define_security_module;
+use crate::{define_security_module, BpfReader};
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
 ///
@@ -40,26 +40,10 @@ impl ExecAlert {
             return Err("Telemetry payload violates minimum size constraints.");
         }
 
-        let pid_bytes: [u8; 4] = data[0..4]
-            .try_into()
-            .map_err(|_| "Memory layout mismatch: Failed to isolate PID block.")?;
-        /*
-         * Native endianness is enforced to match the host architecture of the
-         * kernel.
-         */
-        let pid = u32::from_ne_bytes(pid_bytes);
+        let mut reader = BpfReader::new(data);
 
-        let path_buffer = &data[4..4100];
-        let null_index = path_buffer
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(path_buffer.len());
-
-        /*
-         * `from_utf8_lossy` sanitizes any invalid byte sequences seamlessly, 
-         * preventing application crashes from malformed kernel strings.
-         */
-        let path = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
+        let pid = reader.read_u32()?;
+        let path = reader.read_string(4096)?;
 
         Ok(Self { pid, path })
     }

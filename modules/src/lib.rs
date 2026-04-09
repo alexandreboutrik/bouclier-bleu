@@ -23,6 +23,51 @@ use std::sync::Arc;
 
 pub mod exec_block;
 
+/// A zero-copy utility for safely extracting native Rust types from contiguous
+/// eBPF telemetry buffers. Prevents buffer underruns and isolates byte-shifting
+/// boilerplate from the heuristic modules.
+pub struct BpfReader<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> BpfReader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    /// Safely extracts a 32-bit unsigned integer using native endianness.
+    pub fn read_u32(&mut self) -> Result<u32, &'static str> {
+        if self.offset + 4 > self.data.len() {
+            return Err("Buffer underrun: Failed to isolate u32 block.");
+        }
+        let bytes: [u8; 4] = self.data[self.offset..self.offset + 4]
+            .try_into()
+            .map_err(|_| "Memory layout mismatch for u32")?;
+        self.offset += 4;
+        Ok(u32::from_ne_bytes(bytes))
+    }
+
+    /// Safely extracts a C-style null-terminated string up to a maximum length.
+    pub fn read_string(&mut self, max_len: usize) -> Result<String, &'static str> {
+        if self.offset + max_len > self.data.len() {
+            return Err("Buffer underrun: String boundary exceeds payload size.");
+        }
+        
+        let path_buffer = &self.data[self.offset..self.offset + max_len];
+        let null_index = path_buffer
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(max_len);
+
+        // `from_utf8_lossy` sanitizes invalid byte sequences seamlessly
+        let result = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
+        self.offset += max_len;
+        
+        Ok(result)
+    }
+}
+
 /// Defines the architectural boundary between the generalized eBPF event
 /// router and specialized defensive heuristics.
 ///

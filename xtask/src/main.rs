@@ -361,7 +361,13 @@ fn incus_exec(command: &str) -> TaskResult<()> {
 fn execute_cmd(cmd: &mut Command, error_msg: &str) -> TaskResult<()> {
     let output = cmd.output().map_err(|e| format!("{}: {}", error_msg, e))?;
     if !output.status.success() {
-        return Err(format!("{} (Exit code: {})", error_msg, output.status.code().unwrap_or(-1)));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "{} (Exit code: {})\n\n--- STDERR ---\n{}", 
+            error_msg, 
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
     }
     Ok(())
 }
