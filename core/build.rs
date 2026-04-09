@@ -48,27 +48,19 @@ fn main() {
      */
     println!("cargo:rerun-if-changed=../bpf");
 
-    /*
-     * Replicate the 'include/' directory structure within Cargo's isolated
-     * OUT_DIR. The eBPF C code strictly includes "include/vmlinux.h". By
-     * staging it here and passing -I<OUT_DIR> to Clang, we satisfy the
-     * compiler's relative path resolution without mutating the tracked Git
-     * repository.
-     */
-    let out_include_dir = out_dir.join("include");
-    if !out_include_dir.exists() {
-        fs::create_dir_all(&out_include_dir)
-            .expect("Failed to create include directory in OUT_DIR");
-    }
-
-    let vmlinux_path = out_include_dir.join("vmlinux.h");
-
     let bpf_dir = Path::new("../bpf");
     let bpf_include_dir = bpf_dir.join("include");
 
     if !bpf_include_dir.exists() {
         fs::create_dir_all(&bpf_include_dir).expect("Failed to construct ../bpf/include directory");
     }
+
+    /*
+     * We dump vmlinux.h directly into the source tree's include directory.
+     * This is strictly to support C Language Servers (like clangd) for
+     * autocomplete and linting.
+     */
+    let vmlinux_path = bpf_include_dir.join("vmlinux.h");
 
     /*
      * Dynamically dump the BPF Type Format (BTF) from the currently running
