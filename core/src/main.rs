@@ -32,6 +32,7 @@ use libbpf_rs::RingBufferBuilder;
 use modules::SecurityModule;
 
 pub mod ipc;
+pub mod config;
 
 #[allow(clippy::all)]
 pub mod bpf_loader {
@@ -40,6 +41,8 @@ pub mod bpf_loader {
 
 fn main() -> Result<()> {
     println!("🛡️ Starting Bouclier Bleu Core Engine...");
+
+    let daemon_config = config::DaemonConfig::load();
 
     /*
      * REGISTRY INITIALIZATION
@@ -75,7 +78,9 @@ fn main() -> Result<()> {
     let mut has_ringbuf = false;
 
     for (mod_name, stored_skel) in active_skeletons.iter() {
-        if let Err(e) = bpf_loader::set_module_state(&**stored_skel, mod_name, true) {
+        let is_active = daemon_config.modules.get(mod_name).copied().unwrap_or(false);
+
+        if let Err(e) = bpf_loader::set_module_state(&**stored_skel, mod_name, is_active) {
             println!("· [Warning] Failed to initialize kernel state map for {}: {}", mod_name, e);
         }
 
@@ -98,7 +103,7 @@ fn main() -> Result<()> {
         }
 
         if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
-            user_mod.toggle(true);
+            user_mod.toggle(is_active);
         }
     }
     
