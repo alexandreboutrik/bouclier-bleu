@@ -24,21 +24,22 @@ use std::process::Command;
 
 /// Translates snake_case C filenames into CamelCase Rust identifiers.
 /// Required because libbpf-rs automatically generates skeleton builder
-/// structs utilizing CamelCase conventions (e.g., `exec_block.bpf.c` is 
+/// structs utilizing CamelCase conventions (e.g., `exec_block.bpf.c` is
 /// compiled into `ExecBlockSkelBuilder`).
 fn snake_to_camel(s: &str) -> String {
-    s.split('_').map(|w| {
-        let mut c = w.chars();
-        match c.next() {
-            None => String::new(),
-            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        }
-    }).collect()
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect()
 }
 
 fn main() {
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").
-        expect("OUT_DIR must be set"));
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
 
     /*
      * Restrict build cache invalidation to the eBPF source directory.
@@ -66,10 +67,9 @@ fn main() {
     let bpf_include_dir = bpf_dir.join("include");
 
     if !bpf_include_dir.exists() {
-        fs::create_dir_all(&bpf_include_dir)
-            .expect("Failed to construct ../bpf/include directory");
+        fs::create_dir_all(&bpf_include_dir).expect("Failed to construct ../bpf/include directory");
     }
-    
+
     /*
      * Dynamically dump the BPF Type Format (BTF) from the currently running
      * kernel into a fresh vmlinux.h. This architectural choice ensures the
@@ -78,13 +78,20 @@ fn main() {
      * committing a 100k+ line header.
      */
     let bpftool_out = Command::new("bpftool")
-        .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"])
+        .args([
+            "btf",
+            "dump",
+            "file",
+            "/sys/kernel/btf/vmlinux",
+            "format",
+            "c",
+        ])
         .output()
         .expect("Failed to execute bpftool. Is linux-tools-common installed?");
 
     if !bpftool_out.status.success() {
         panic!(
-            "Failed to dump vmlinux.h. bpftool stderr: {}", 
+            "Failed to dump vmlinux.h. bpftool stderr: {}",
             String::from_utf8_lossy(&bpftool_out.stderr)
         );
     }
@@ -93,12 +100,12 @@ fn main() {
         .expect("Failed to write dynamically generated vmlinux.h");
 
     let entries = fs::read_dir(bpf_dir).expect("Failed to read bpf dir");
-    
+
     let mut module_includes = Vec::new();
-    let mut load_arms       = Vec::new();
-    let mut toggle_arms     = Vec::new();
-    let mut get_map_arms    = Vec::new();
-    let mut module_names    = Vec::new();
+    let mut load_arms = Vec::new();
+    let mut toggle_arms = Vec::new();
+    let mut get_map_arms = Vec::new();
+    let mut module_names = Vec::new();
 
     let clang_include_bpf = format!("-I{}", bpf_include_dir.display());
     let clang_include_out = format!("-I{}", out_dir.display());
@@ -109,7 +116,7 @@ fn main() {
 
         if path.is_file() && path.extension().unwrap_or_default() == "c" {
             let file_name = path.file_name().unwrap().to_str().unwrap();
-            
+
             if file_name.ends_with(".bpf.c") {
                 let base_name = file_name.trim_end_matches(".bpf.c");
                 let skel_name = format!("{}.skel.rs", base_name);
@@ -124,13 +131,9 @@ fn main() {
                  */
                 SkeletonBuilder::new()
                     .source(&path)
-                    .clang_args([
-                        clang_include_bpf.as_str(),
-                        clang_include_out.as_str(),
-                    ])
+                    .clang_args([clang_include_bpf.as_str(), clang_include_out.as_str()])
                     .build_and_generate(&out_path)
-                    .unwrap_or_else(|e| panic!("Failed to compile {}: {:?}",
-                            file_name, e));
+                    .unwrap_or_else(|e| panic!("Failed to compile {}: {:?}", file_name, e));
 
                 /*
                  * Leverage AST generation (via the `quote` crate) rather than
@@ -151,7 +154,7 @@ fn main() {
                 });
 
                 module_names.push(base_name.to_string());
-                    
+
                 /*
                  * Generate the state machine transitions for dynamically
                  * attaching the BPF hooks into the kernel during daemon
@@ -169,7 +172,7 @@ fn main() {
 
                 /*
                  * DYNAMIC MAP RESOLUTION
-                 * Instead of guessing if `state_map` exists by parsing C code, 
+                 * Instead of guessing if `state_map` exists by parsing C code,
                  * we generate logic that dynamically attempts to look up the
                  * map by name within the libbpf object at runtime. If it
                  * doesn't exist (e.g., telemetry-only modules), it gracefully
@@ -179,7 +182,7 @@ fn main() {
                     if let Some(state_map) = skel.obj.map("state_map") {
                         let key: [u8; 4] = 0u32.to_ne_bytes();
                         let val: [u8; 4] = if active { 1u32 } else { 0u32 }.to_ne_bytes();
-                        
+
                         state_map.update(&key[..], &val[..], MapFlags::ANY)
                             .context(concat!("Failed to synchronize eBPF state_map for ", stringify!(#mod_ident)))?;
                     }
@@ -242,7 +245,7 @@ fn main() {
         }
 
         /// Synchronizes the administrative state with the kernel-space BPF map.
-        /// Prevents Denial-of-Service and pipeline breakage by toggling logic 
+        /// Prevents Denial-of-Service and pipeline breakage by toggling logic
         /// in the kernel context instead of dropping the full LSM link
         /// descriptor.
         pub fn set_module_state(skel: &dyn Any, name: &str, active: bool) -> Result<()> {

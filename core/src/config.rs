@@ -17,8 +17,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 /// Strongly typed representation of the daemon's TOML configuration.
 #[derive(Deserialize, Debug, Default)]
@@ -39,16 +39,16 @@ impl DaemonConfig {
 
         // Allow local working-directory fallbacks during development.
         #[cfg(debug_assertions)]
-        let search_paths = [
-            "/etc/bouclier-bleu/config.toml",
-            "config.toml",
-        ];
+        let search_paths = ["/etc/bouclier-bleu/config.toml", "config.toml"];
 
         for path in search_paths {
             if Path::new(path).exists() {
                 if let Ok(metadata) = fs::metadata(path) {
                     if metadata.uid() != 0 {
-                        panic!("FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.", path);
+                        panic!(
+                            "FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.",
+                            path
+                        );
                     }
                 }
 
@@ -58,7 +58,10 @@ impl DaemonConfig {
                             println!("· [Config] Loaded configuration from {}", path);
                             return config;
                         }
-                        Err(e) => panic!("FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.", path, e),
+                        Err(e) => panic!(
+                            "FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.",
+                            path, e
+                        ),
                     },
                     Err(e) => eprintln!("· [Warning] Failed to read {}: {}", path, e),
                 }

@@ -16,7 +16,7 @@
 
 use std::fs::{self, DirBuilder};
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, DirBuilderExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::thread;
@@ -40,8 +40,8 @@ pub enum DaemonCmd {
 
 /// Represents an encapsulated transaction across the IPC boundary.
 ///
-/// Includes a single-use transmission channel (`mpsc::Sender`) allowing the 
-/// asynchronous core engine to route execution results back to the synchronous 
+/// Includes a single-use transmission channel (`mpsc::Sender`) allowing the
+/// asynchronous core engine to route execution results back to the synchronous
 /// socket thread.
 pub struct IpcMessage {
     pub cmd: DaemonCmd,
@@ -50,23 +50,30 @@ pub struct IpcMessage {
 
 /// Spawns the CLI Control Plane listener on an isolated background thread.
 ///
-/// Exclusively handles socket connections and command parsing, delegating 
+/// Exclusively handles socket connections and command parsing, delegating
 /// actual state mutation to the main execution engine via `mpsc`.
 pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
     /*
      * SECURITY: TOCTOU (Time-of-Check to Time-of-Use) Mitigation
-     * We atomically create the directory with root-only permissions (0o700). 
-     * This eliminates the microsecond world-readable window that occurs if 
+     * We atomically create the directory with root-only permissions (0o700).
+     * This eliminates the microsecond world-readable window that occurs if
      * permissions are locked down *after* creation.
      */
-    if let Err(e) = DirBuilder::new().recursive(true).mode(0o700).create(SOCKET_DIR) {
+    if let Err(e) = DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(SOCKET_DIR)
+    {
         eprintln!("FATAL: Failed to construct secure IPC directory: {}", e);
         return;
     }
 
     if let Ok(meta) = fs::metadata(SOCKET_DIR) {
         if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
-            eprintln!("FATAL: IPC directory {} exists but has insecure permissions or ownership.", SOCKET_DIR);
+            eprintln!(
+                "FATAL: IPC directory {} exists but has insecure permissions or ownership.",
+                SOCKET_DIR
+            );
             return;
         }
     } else {
@@ -77,8 +84,7 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
     let _ = fs::remove_file(SOCKET_PATH);
     let old_umask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o177));
 
-    let listener = UnixListener::bind(SOCKET_PATH)
-        .expect("FATAL: Failed to bind to Unix socket");
+    let listener = UnixListener::bind(SOCKET_PATH).expect("FATAL: Failed to bind to Unix socket");
 
     rustix::process::umask(old_umask);
 
@@ -100,22 +106,30 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
                     match sockopt::get_socket_peercred(&stream) {
                         Ok(cred) => {
                             if cred.uid.as_raw() != 0 {
-                                eprintln!("SECURITY ALERT: Non-root process (UID: {}) attempted IPC connection.", cred.uid.as_raw());
-                                let _ = stream.write_all(b"ERROR: Permission denied. Root access required.\n");
+                                eprintln!(
+                                    "SECURITY ALERT: Non-root process (UID: {}) attempted IPC connection.",
+                                    cred.uid.as_raw()
+                                );
+                                let _ = stream.write_all(
+                                    b"ERROR: Permission denied. Root access required.\n",
+                                );
                                 continue;
                             }
                         }
                         Err(e) => {
-                            eprintln!("SECURITY ERROR: Kernel failed to yield peer credentials: {}. Dropping connection.", e);
+                            eprintln!(
+                                "SECURITY ERROR: Kernel failed to yield peer credentials: {}. Dropping connection.",
+                                e
+                            );
                             continue;
                         }
                     }
 
                     /*
                      * RESOURCE EXHAUSTION MITIGATION (Anti-DoS)
-                     * Since the listener processes connections sequentially to 
-                     * avoid thread-spawning overhead, a malicious root client 
-                     * could connect and refuse to send data, hanging the 
+                     * Since the listener processes connections sequentially to
+                     * avoid thread-spawning overhead, a malicious root client
+                     * could connect and refuse to send data, hanging the
                      * entire control plane. We enforce a strict read timeout
                      * to sever stalled connections and maintain daemon
                      * availability.
@@ -136,26 +150,40 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
                      * send infinite data.
                      */
                     if let Ok(bytes_read) = (&mut stream).take(1024).read_to_end(&mut buffer) {
-                        if bytes_read == 0 { continue; }
-                        
+                        if bytes_read == 0 {
+                            continue;
+                        }
+
                         let command_str = String::from_utf8_lossy(&buffer).trim().to_string();
                         let parts: Vec<&str> = command_str.split_whitespace().collect();
-                        if parts.is_empty() { continue; }
+                        if parts.is_empty() {
+                            continue;
+                        }
 
                         let cmd = match parts[0].to_uppercase().as_str() {
                             "STATUS" => DaemonCmd::Status,
                             "LIST" => DaemonCmd::List,
                             "ENABLE" if parts.len() > 1 => DaemonCmd::Enable(parts[1].to_string()),
-                            "DISABLE" if parts.len() > 1 => DaemonCmd::Disable(parts[1].to_string()),
+                            "DISABLE" if parts.len() > 1 => {
+                                DaemonCmd::Disable(parts[1].to_string())
+                            }
                             _ => {
-                                let _ = stream.write_all(format!("ERROR: Unknown command '{}'\n", parts[0]).as_bytes());
+                                let _ = stream.write_all(
+                                    format!("ERROR: Unknown command '{}'\n", parts[0]).as_bytes(),
+                                );
                                 continue;
                             }
                         };
 
                         let (reply_tx, reply_rx) = mpsc::channel();
 
-                        if tx.send(IpcMessage { cmd, reply: reply_tx }).is_ok() {
+                        if tx
+                            .send(IpcMessage {
+                                cmd,
+                                reply: reply_tx,
+                            })
+                            .is_ok()
+                        {
                             /*
                              * THREAD DEADLOCK PREVENTION
                              * We bound the wait time for the main engine's
@@ -167,7 +195,8 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
                             if let Ok(response) = reply_rx.recv_timeout(Duration::from_secs(5)) {
                                 let _ = stream.write_all(response.as_bytes());
                             } else {
-                                let _ = stream.write_all(b"ERROR: Engine operation timed out or panicked.\n");
+                                let _ = stream
+                                    .write_all(b"ERROR: Engine operation timed out or panicked.\n");
                             }
                         }
                     }

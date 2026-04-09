@@ -37,7 +37,7 @@ struct TestRecord {
 
 fn main() {
     let mut args = env::args().skip(1);
-    
+
     let result = match args.next().as_deref() {
         Some("prepare-image") => prepare_test_image(),
         Some("test") => run_tests(args.next().as_deref(), args.next().as_deref()),
@@ -46,10 +46,16 @@ fn main() {
             eprintln!("Usage:");
             eprintln!("  cargo xtask prepare-image           - Builds the base testing VM image");
             eprintln!("  cargo xtask test                    - Runs all public test suites in VM");
-            eprintln!("  cargo xtask test component          - Runs all module component tests in VM");
+            eprintln!(
+                "  cargo xtask test component          - Runs all module component tests in VM"
+            );
             eprintln!("  cargo xtask test integration        - Runs all integration tests in VM");
-            eprintln!("  cargo xtask test performance        - Runs all performance benchmarks in VM (TODO)");
-            eprintln!("  cargo xtask test <category> [test]  - Runs a specific test file within a category");
+            eprintln!(
+                "  cargo xtask test performance        - Runs all performance benchmarks in VM (TODO)"
+            );
+            eprintln!(
+                "  cargo xtask test <category> [test]  - Runs a specific test file within a category"
+            );
             eprintln!("  cargo xtask test <fuzz/threat>      - Restricted Private Suites");
             exit(1);
         }
@@ -65,8 +71,13 @@ fn main() {
 struct VmGuard;
 impl Drop for VmGuard {
     fn drop(&mut self) {
-        println!("\n[INFO] Terminating ephemeral test environment ({})...", VM_NAME);
-        let _ = Command::new("incus").args(["delete", VM_NAME, "--force"]).output();
+        println!(
+            "\n[INFO] Terminating ephemeral test environment ({})...",
+            VM_NAME
+        );
+        let _ = Command::new("incus")
+            .args(["delete", VM_NAME, "--force"])
+            .output();
     }
 }
 
@@ -81,16 +92,31 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
 
     let mut execute_suite = |cat: &str, target: Option<&str>| -> TaskResult<()> {
         let (res, time) = match cat {
-            "component" => run_test_suite("Component (eBPF Defenses)", "component", "sh", target, |_, full| format!("bash tests/component/{}", full))?,
-            "integration" => run_test_suite("Integration", "integration", "rs", target, |stem, _| format!("cargo test -q --release --test {}", stem))?,
+            "component" => run_test_suite(
+                "Component (eBPF Defenses)",
+                "component",
+                "sh",
+                target,
+                |_, full| format!("bash tests/component/{}", full),
+            )?,
+            "integration" => {
+                run_test_suite("Integration", "integration", "rs", target, |stem, _| {
+                    format!("cargo test -q --release --test {}", stem)
+                })?
+            }
             "performance" => {
-                println!("\n[INFO] Executing Performance Benchmarks...\n[TODO] Pending implementation. Bypassing.");
+                println!(
+                    "\n[INFO] Executing Performance Benchmarks...\n[TODO] Pending implementation. Bypassing."
+                );
                 (Vec::new(), Duration::ZERO)
-            },
+            }
             "fuzzing" | "threat" => {
-                println!("[WARN] The '{}' test suite requires strict network air-gapping and is restricted.", cat);
+                println!(
+                    "[WARN] The '{}' test suite requires strict network air-gapping and is restricted.",
+                    cat
+                );
                 (Vec::new(), Duration::ZERO)
-            },
+            }
             _ => return Err(format!("Unknown test category: {}", cat)),
         };
         all_results.extend(res);
@@ -121,7 +147,7 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
 
 // --- Generic Test Runner Engine ---
 
-/// Generic execution engine that dynamically evaluates test directories, filters 
+/// Generic execution engine that dynamically evaluates test directories, filters
 /// targets, restores snapshots, and evaluates outcomes using a provided command builder.
 fn run_test_suite<F>(
     title: &str,
@@ -138,13 +164,18 @@ where
     let mut total_restore_time = Duration::ZERO;
 
     if !suite_dir.exists() {
-        println!("[INFO] No {} test artifacts located. Bypassing phase.", dir_name);
+        println!(
+            "[INFO] No {} test artifacts located. Bypassing phase.",
+            dir_name
+        );
         return Ok((results, total_restore_time));
     }
 
     println!("\n[INFO] Executing {} Tests...", title);
 
-    for entry in fs::read_dir(&suite_dir).map_err(|e| format!("IO Error reading {} dir: {}", dir_name, e))? {
+    for entry in
+        fs::read_dir(&suite_dir).map_err(|e| format!("IO Error reading {} dir: {}", dir_name, e))?
+    {
         let path = entry.unwrap().path();
 
         if path.is_file() && path.extension().unwrap_or_default() == ext {
@@ -158,15 +189,22 @@ where
                     continue;
                 }
             }
-            
-            let display_name = if ext == "sh" { full_name.to_string() } else { stem.to_string() };
 
-            println!("\n[INFO] Reverting environment to clean state for {}...", display_name);
+            let display_name = if ext == "sh" {
+                full_name.to_string()
+            } else {
+                stem.to_string()
+            };
+
+            println!(
+                "\n[INFO] Reverting environment to clean state for {}...",
+                display_name
+            );
             total_restore_time += restore_vm_snapshot()?;
 
             println!("[INFO] Executing {}...", display_name);
             let cmd = build_cmd(&stem, &full_name);
-            
+
             let start_time = Instant::now();
             let result = incus_exec(&cmd);
             let passed = result.is_ok();
@@ -176,7 +214,7 @@ where
                 println!("[SUCCESS] Passed: {}", display_name);
             } else {
                 eprintln!("\n[ERROR] {} test failed: {}", dir_name, display_name);
-                eprintln!("{}", result.unwrap_err()); 
+                eprintln!("{}", result.unwrap_err());
             }
 
             results.push(TestRecord {
@@ -198,7 +236,9 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
     let start = Instant::now();
 
     ensure_base_image()?;
-    let _ = Command::new("incus").args(["delete", VM_NAME, "--force"]).output();
+    let _ = Command::new("incus")
+        .args(["delete", VM_NAME, "--force"])
+        .output();
     launch_instance()?;
     await_guest_agent()?;
     transfer_workspace()?;
@@ -212,7 +252,11 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
 }
 
 fn ensure_base_image() -> TaskResult<()> {
-    if Command::new("incus").args(["image", "info", IMAGE_ALIAS]).output().map_or(false, |o| o.status.success()) {
+    if Command::new("incus")
+        .args(["image", "info", IMAGE_ALIAS])
+        .output()
+        .map_or(false, |o| o.status.success())
+    {
         return Ok(());
     }
 
@@ -222,12 +266,22 @@ fn ensure_base_image() -> TaskResult<()> {
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .find(|e| e.file_name().to_string_lossy().starts_with("bouclier-bleu-test-base.tar"))
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("bouclier-bleu-test-base.tar")
+        })
         .map(|e| e.path())
         .ok_or("Pre-compiled test image missing. Run `cargo xtask prepare-image`.")?;
-    
+
     let import_out = Command::new("incus")
-        .args(["image", "import", img.to_str().unwrap(), "--alias", IMAGE_ALIAS])
+        .args([
+            "image",
+            "import",
+            img.to_str().unwrap(),
+            "--alias",
+            IMAGE_ALIAS,
+        ])
         .output()
         .map_err(|e| format!("Incus import failed: {}", e))?;
 
@@ -235,9 +289,19 @@ fn ensure_base_image() -> TaskResult<()> {
         let stderr = String::from_utf8_lossy(&import_out.stderr);
         if stderr.contains("already exists") {
             println!("[INFO] Abstracting existing fingerprint constraint via direct alias...");
-            let sha_out = Command::new("sha256sum").arg(&img).output().map_err(|e| e.to_string())?;
-            let fingerprint = String::from_utf8_lossy(&sha_out.stdout).split_whitespace().next().unwrap_or("").to_string();
-            execute_cmd(Command::new("incus").args(["image", "alias", "create", IMAGE_ALIAS, &fingerprint]), "Failed to bypass alias lock")?;
+            let sha_out = Command::new("sha256sum")
+                .arg(&img)
+                .output()
+                .map_err(|e| e.to_string())?;
+            let fingerprint = String::from_utf8_lossy(&sha_out.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            execute_cmd(
+                Command::new("incus").args(["image", "alias", "create", IMAGE_ALIAS, &fingerprint]),
+                "Failed to bypass alias lock",
+            )?;
         } else {
             return Err(format!("Image synchronization error:\n{}", stderr));
         }
@@ -246,10 +310,20 @@ fn ensure_base_image() -> TaskResult<()> {
 }
 
 fn launch_instance() -> TaskResult<()> {
-    println!("[INFO] Spawning isolated guest environment ({})...", VM_NAME);
+    println!(
+        "[INFO] Spawning isolated guest environment ({})...",
+        VM_NAME
+    );
     execute_cmd(
-        Command::new("incus").args(["launch", IMAGE_ALIAS, VM_NAME, "--vm", "-c", "security.secureboot=false"]),
-        "Guest initialization failed"
+        Command::new("incus").args([
+            "launch",
+            IMAGE_ALIAS,
+            VM_NAME,
+            "--vm",
+            "-c",
+            "security.secureboot=false",
+        ]),
+        "Guest initialization failed",
     )
 }
 
@@ -259,19 +333,40 @@ fn transfer_workspace() -> TaskResult<()> {
     let tarball_path = env::temp_dir().join("bb-src-bundle.tar.gz");
 
     execute_cmd(
-        Command::new("tar").args(["--exclude=target", "--exclude=.git", "--exclude=*.tar.*", "-czf", tarball_path.to_str().unwrap(), "."]).current_dir(&root),
-        "Failed to archive host workspace"
+        Command::new("tar")
+            .args([
+                "--exclude=target",
+                "--exclude=.git",
+                "--exclude=*.tar.*",
+                "-czf",
+                tarball_path.to_str().unwrap(),
+                ".",
+            ])
+            .current_dir(&root),
+        "Failed to archive host workspace",
     )?;
 
     execute_cmd(
-        Command::new("incus").args(["file", "push", tarball_path.to_str().unwrap(), &format!("{}/root/src-bundle.tar.gz", VM_NAME)]),
-        "Host-to-Guest file injection failed"
+        Command::new("incus").args([
+            "file",
+            "push",
+            tarball_path.to_str().unwrap(),
+            &format!("{}/root/src-bundle.tar.gz", VM_NAME),
+        ]),
+        "Host-to-Guest file injection failed",
     )?;
 
     let _ = fs::remove_file(tarball_path);
     execute_cmd(
-        Command::new("incus").args(["exec", VM_NAME, "--", "bash", "-c", "mkdir -p /workspace && tar -xzf /root/src-bundle.tar.gz -C /workspace"]),
-        "Guest extraction phase failed"
+        Command::new("incus").args([
+            "exec",
+            VM_NAME,
+            "--",
+            "bash",
+            "-c",
+            "mkdir -p /workspace && tar -xzf /root/src-bundle.tar.gz -C /workspace",
+        ]),
+        "Guest extraction phase failed",
     )
 }
 
@@ -289,23 +384,34 @@ fn compile_workspace() -> TaskResult<()> {
 
     println!("[INFO] Committing VFS page cache to persistent storage...");
     incus_exec("sync")?;
-    thread::sleep(Duration::from_secs(3)); 
+    thread::sleep(Duration::from_secs(3));
     Ok(())
 }
 
 fn inject_kernel_parameters() -> TaskResult<()> {
     println!("[INFO] Activating eBPF LSM subsystem in guest kernel...");
-    incus_exec("echo 'GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_CMDLINE_LINUX_DEFAULT} lsm=landlock,lockdown,yama,integrity,apparmor,bpf\"' > /etc/default/grub.d/99-bpf-lsm.cfg && update-grub")?;
+    incus_exec(
+        "echo 'GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_CMDLINE_LINUX_DEFAULT} lsm=landlock,lockdown,yama,integrity,apparmor,bpf\"' > /etc/default/grub.d/99-bpf-lsm.cfg && update-grub",
+    )?;
 
     println!("[INFO] Re-initializing kernel via cold boot...");
-    execute_cmd(Command::new("incus").args(["restart", VM_NAME]), "VM reboot procedure failed")?;
+    execute_cmd(
+        Command::new("incus").args(["restart", VM_NAME]),
+        "VM reboot procedure failed",
+    )?;
     await_guest_agent()
 }
 
 fn create_snapshot() -> TaskResult<()> {
     println!("[INFO] Capturing immutable state vector for test resets...");
-    execute_cmd(Command::new("incus").args(["stop", VM_NAME]), "Failed to gracefully halt VM")?;
-    execute_cmd(Command::new("incus").args(["snapshot", "create", VM_NAME, SNAPSHOT_NAME]), "Snapshot generation aborted")
+    execute_cmd(
+        Command::new("incus").args(["stop", VM_NAME]),
+        "Failed to gracefully halt VM",
+    )?;
+    execute_cmd(
+        Command::new("incus").args(["snapshot", "create", VM_NAME, SNAPSHOT_NAME]),
+        "Snapshot generation aborted",
+    )
 }
 
 fn provision_default_config() -> TaskResult<()> {
@@ -314,15 +420,23 @@ fn provision_default_config() -> TaskResult<()> {
         "mkdir -p /etc/bouclier-bleu && \
          cp /workspace/config.toml /etc/bouclier-bleu/config.toml && \
          chown root:root /etc/bouclier-bleu/config.toml && \
-         chmod 600 /etc/bouclier-bleu/config.toml"
+         chmod 600 /etc/bouclier-bleu/config.toml",
     )
 }
 
 fn restore_vm_snapshot() -> TaskResult<Duration> {
     let start = Instant::now();
-    let _ = Command::new("incus").args(["stop", VM_NAME, "--force"]).output();
-    execute_cmd(Command::new("incus").args(["snapshot", "restore", VM_NAME, SNAPSHOT_NAME]), "VM state reversion failed")?;
-    execute_cmd(Command::new("incus").args(["start", VM_NAME]), "Failed to resurrect VM from snapshot")?;
+    let _ = Command::new("incus")
+        .args(["stop", VM_NAME, "--force"])
+        .output();
+    execute_cmd(
+        Command::new("incus").args(["snapshot", "restore", VM_NAME, SNAPSHOT_NAME]),
+        "VM state reversion failed",
+    )?;
+    execute_cmd(
+        Command::new("incus").args(["start", VM_NAME]),
+        "Failed to resurrect VM from snapshot",
+    )?;
     await_guest_agent()?;
     Ok(start.elapsed())
 }
@@ -331,7 +445,11 @@ fn restore_vm_snapshot() -> TaskResult<Duration> {
 
 fn await_guest_agent() -> TaskResult<()> {
     for _ in 0..40 {
-        if Command::new("incus").args(["exec", VM_NAME, "--", "echo", "ready"]).output().map_or(false, |o| o.status.success()) {
+        if Command::new("incus")
+            .args(["exec", VM_NAME, "--", "echo", "ready"])
+            .output()
+            .map_or(false, |o| o.status.success())
+        {
             return Ok(());
         }
         thread::sleep(Duration::from_secs(2));
@@ -350,9 +468,9 @@ fn incus_exec(command: &str) -> TaskResult<()> {
         Ok(())
     } else {
         Err(format!(
-            "Guest command failed (Exit code: {:?})\n\n--- STDOUT ---\n{}\n--- STDERR ---\n{}", 
-            output.status.code(), 
-            String::from_utf8_lossy(&output.stdout), 
+            "Guest command failed (Exit code: {:?})\n\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ))
     }
@@ -363,8 +481,8 @@ fn execute_cmd(cmd: &mut Command, error_msg: &str) -> TaskResult<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "{} (Exit code: {})\n\n--- STDERR ---\n{}", 
-            error_msg, 
+            "{} (Exit code: {})\n\n--- STDERR ---\n{}",
+            error_msg,
             output.status.code().unwrap_or(-1),
             stderr.trim()
         ));
@@ -374,33 +492,59 @@ fn execute_cmd(cmd: &mut Command, error_msg: &str) -> TaskResult<()> {
 
 fn prepare_test_image() -> TaskResult<()> {
     let root = project_root();
-    if root.join("tests/bouclier-bleu-test-base.tar.gz").exists() || root.join("tests/bouclier-bleu-test-base.tar.xz").exists() {
+    if root.join("tests/bouclier-bleu-test-base.tar.gz").exists()
+        || root.join("tests/bouclier-bleu-test-base.tar.xz").exists()
+    {
         return Ok(());
     }
 
     println!("[INFO] Pre-compiled testing artifact missing. Initiating build sequence...");
-    execute_cmd(Command::new("bash").arg(root.join("scripts/build_image.sh")).current_dir(&root), "Upstream base-image compilation script failed")
+    execute_cmd(
+        Command::new("bash")
+            .arg(root.join("scripts/build_image.sh"))
+            .current_dir(&root),
+        "Upstream base-image compilation script failed",
+    )
 }
 
-fn generate_markdown_report(results: &[TestRecord], setup_time: Duration, restore_time: Duration) -> Result<(), std::io::Error> {
+fn generate_markdown_report(
+    results: &[TestRecord],
+    setup_time: Duration,
+    restore_time: Duration,
+) -> Result<(), std::io::Error> {
     if results.is_empty() {
         println!("[INFO] No tests were executed. Skipping report generation.");
         return Ok(());
     }
 
-    let mut report = String::from("# Bouclier Bleu Test Results\n\n| Test Name | Category | Duration | Status |\n|-----------|----------|----------|--------|\n");
+    let mut report = String::from(
+        "# Bouclier Bleu Test Results\n\n| Test Name | Category | Duration | Status |\n|-----------|----------|----------|--------|\n",
+    );
     for res in results {
-        report.push_str(&format!("| `{}` | {} | {:.2}s | {} |\n", res.name, res.category, res.duration.as_secs_f64(), if res.passed { "PASS" } else { "FAIL" }));
+        report.push_str(&format!(
+            "| `{}` | {} | {:.2}s | {} |\n",
+            res.name,
+            res.category,
+            res.duration.as_secs_f64(),
+            if res.passed { "PASS" } else { "FAIL" }
+        ));
     }
 
     report.push_str(&format!("\n## Pipeline Environment Metrics\n\n* **Initial VM Setup & Snapshot:** `{:.2}s`\n* **Cumulative Snapshot Restorations:** `{:.2}s`\n", setup_time.as_secs_f64(), restore_time.as_secs_f64()));
 
     let report_path = project_root().join("tests").join("Results.md");
     fs::write(&report_path, report)?;
-    println!("\n[INFO] Test report successfully generated at {}", report_path.display());
+    println!(
+        "\n[INFO] Test report successfully generated at {}",
+        report_path.display()
+    );
     Ok(())
 }
 
 fn project_root() -> PathBuf {
-    Path::new(&env!("CARGO_MANIFEST_DIR")).ancestors().nth(1).unwrap().to_path_buf()
+    Path::new(&env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(1)
+        .unwrap()
+        .to_path_buf()
 }

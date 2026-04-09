@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{define_security_module, BpfReader};
+use crate::{BpfReader, define_security_module};
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
 ///
@@ -24,15 +24,15 @@ use crate::{define_security_module, BpfReader};
 #[derive(Debug)]
 pub struct ExecAlert {
     pub pid: u32,
-    pub path: String, 
+    pub path: String,
 }
 
 impl ExecAlert {
     /// Safe Deserialization Engine.
     ///
-    /// Extracts structured fields from the contiguous memory slice provided by 
-    /// the kernel. Utilizing `try_into()` and `from_utf8_lossy()` entirely 
-    /// eliminates the need for C-FFI or `unsafe` blocks, neutralizing the risk 
+    /// Extracts structured fields from the contiguous memory slice provided by
+    /// the kernel. Utilizing `try_into()` and `from_utf8_lossy()` entirely
+    /// eliminates the need for C-FFI or `unsafe` blocks, neutralizing the risk
     /// of buffer overflows or panics from malformed kernel strings.
     pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         // Enforce structural boundaries: 4 (u32 PID) + 4096 (PATH_MAX)
@@ -54,7 +54,7 @@ impl ExecAlert {
  * Memory corruption exploits and web-shell droppers frequently lack the
  * privileges required to write to protected directories (/usr/bin). They rely
  * on world-writable paths (/tmp, /dev/shm) to stage secondary payloads.
- * This module consumes events from the `alerts` RingBuffer, triggered 
+ * This module consumes events from the `alerts` RingBuffer, triggered
  * dynamically whenever the kernel vetoes an execution attempt from these paths.
  */
 define_security_module!(
@@ -64,7 +64,7 @@ define_security_module!(
     parser: ExecAlert::try_from_bytes,
     handler: |alert: ExecAlert| {
         /*
-         * FIXME: Forwarding to standard output for PoC. 
+         * FIXME: Forwarding to standard output for PoC.
          * Production iterations should forward this object to a SIEM
          * connector.
          */

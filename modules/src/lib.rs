@@ -16,7 +16,7 @@
 
 //! Core Abstractions for Bouclier Bleu Security Modules.
 //!
-//! This module provides the `SecurityModule` contract and the IoC registry, 
+//! This module provides the `SecurityModule` contract and the IoC registry,
 //! decoupling specific defensive heuristics from the core eBPF routing engine.
 
 use std::sync::Arc;
@@ -53,17 +53,14 @@ impl<'a> BpfReader<'a> {
         if self.offset + max_len > self.data.len() {
             return Err("Buffer underrun: String boundary exceeds payload size.");
         }
-        
+
         let path_buffer = &self.data[self.offset..self.offset + max_len];
-        let null_index = path_buffer
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(max_len);
+        let null_index = path_buffer.iter().position(|&b| b == 0).unwrap_or(max_len);
 
         // `from_utf8_lossy` sanitizes invalid byte sequences seamlessly
         let result = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
         self.offset += max_len;
-        
+
         Ok(result)
     }
 }
@@ -71,18 +68,18 @@ impl<'a> BpfReader<'a> {
 /// Defines the architectural boundary between the generalized eBPF event
 /// router and specialized defensive heuristics.
 ///
-/// Modules are instantiated once at boot and shared across asynchronous worker 
-/// threads (the Main Actor loop and the IPC loop) via `Arc`. Implementors 
+/// Modules are instantiated once at boot and shared across asynchronous worker
+/// threads (the Main Actor loop and the IPC loop) via `Arc`. Implementors
 /// must guarantee thread-safe interior mutability.
 pub trait SecurityModule: Send + Sync {
     /// The human-readable operational name for UI/CLI presentation.
     fn name(&self) -> &'static str;
 
-    /// The unique system identifier used by the IPC router for mapping incoming 
+    /// The unique system identifier used by the IPC router for mapping incoming
     /// daemon commands to the correct instance.
     fn slug(&self) -> &'static str;
 
-    /// Returns the real-time operational state. 
+    /// Returns the real-time operational state.
     /// `false` indicates the module should silently drop routed kernel events.
     fn status(&self) -> bool;
 
@@ -99,7 +96,7 @@ pub trait SecurityModule: Send + Sync {
 
 /// Inversion of Control (IoC) Registry Builder.
 ///
-/// Constructs the active defense matrix. The core engine remains agnostic to 
+/// Constructs the active defense matrix. The core engine remains agnostic to
 /// specific threat heuristics, iterating purely over this dynamic trait object
 /// matrix.
 pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
@@ -111,7 +108,7 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 
 /// Declarative factory macro for generating `SecurityModule` boilerplate.
 ///
-/// Enforces a strict "No Unsafe" boundary. Callers must inject a purely safe 
+/// Enforces a strict "No Unsafe" boundary. Callers must inject a purely safe
 /// parsing function (`$parser`) to validate raw kernel bytes before the
 /// payload reaches the heuristic engine.
 #[macro_export]
@@ -136,12 +133,18 @@ macro_rules! define_security_module {
         }
 
         impl Default for $struct_name {
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
         impl crate::SecurityModule for $struct_name {
-            fn name(&self) -> &'static str { $name }
-            fn slug(&self) -> &'static str { $slug }
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn slug(&self) -> &'static str {
+                $slug
+            }
 
             fn status(&self) -> bool {
                 /*
@@ -158,12 +161,19 @@ macro_rules! define_security_module {
                  * thread  is immediately visible to the RingBuffer polling
                  * thread.
                  */
-                self.is_active.store(state, std::sync::atomic::Ordering::SeqCst);
-                println!("Bouclier Bleu [Control]: {} active state -> {}", self.slug(), state);
+                self.is_active
+                    .store(state, std::sync::atomic::Ordering::SeqCst);
+                println!(
+                    "Bouclier Bleu [Control]: {} active state -> {}",
+                    self.slug(),
+                    state
+                );
             }
-            
+
             fn process_event(&self, event_data: &[u8]) {
-                if !self.status() { return; }
+                if !self.status() {
+                    return;
+                }
 
                 /*
                  * Utilize the strictly safe, module-specific parsing logic.
@@ -178,7 +188,11 @@ macro_rules! define_security_module {
                         $handler(alert);
                     }
                     Err(e) => {
-                        eprintln!("Bouclier Bleu [Error]: {} failed to parse kernel event: {}", self.slug(), e);
+                        eprintln!(
+                            "Bouclier Bleu [Error]: {} failed to parse kernel event: {}",
+                            self.slug(),
+                            e
+                        );
                     }
                 }
             }

@@ -83,7 +83,9 @@ fn send_command_to_daemon(cmd: &str) {
         Err(e) => {
             eprintln!("Failed to connect to Bouclier Bleu daemon.");
             eprintln!("Error: {}", e);
-            eprintln!("Make sure the core engine is running and you are executing this CLI as root (sudo).");
+            eprintln!(
+                "Make sure the core engine is running and you are executing this CLI as root (sudo)."
+            );
             process::exit(1);
         }
     }
