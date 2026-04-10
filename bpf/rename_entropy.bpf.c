@@ -217,12 +217,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
         return 0; // Neither boundary is protected, safely ignore the event
     }
 
-	/*
-     * Target Filename Extraction
-     * The bitwise mask (nlen & 0xFF) enforces a strict upper bound of 255.
-     * This explicitly proves to the BPF verifier that subsequent array
-     * accesses and loop iterations will never exceed allocated bounds.
-     */
+	/* Target Filename Extraction */
     __u32 nlen = BPF_CORE_READ(new_dentry, d_name.len);
 
 	/*

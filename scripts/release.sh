@@ -115,8 +115,12 @@ function init_env() {
 
     echo "Starting release process for ${APP_NAME} v${BB_VERSION}..."
     echo "Cleaning previous builds..."
-    rm -rf "${DIST_DIR}" ||
-		{ echo "Failed to remove old dist directory. Exiting." ; exit 1 ; }
+
+	if [ -d "${DIST_DIR}" ] ; then
+    	sudo rm -rf "${DIST_DIR}" ||
+			{ echo "Failed to remove old dist directory. Exiting." ; exit 1 ; }
+	fi
+
     mkdir -p "${DIST_DIR}" ||
 		{ echo "Failed to create dist directory. Exiting." ; exit 1 ; }
 }
@@ -129,7 +133,9 @@ function build_deb() {
     docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:24.04 bash -c "
         set -e
         apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems || exit 1
+            curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems linux-tools-common linux-tools-generic || exit 1
+
+		ln -s /usr/lib/linux-tools/*/bpftool /usr/local/bin/bpftool
         
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || exit 1
         source \$HOME/.cargo/env
@@ -137,9 +143,11 @@ function build_deb() {
         cd /app
         cargo build --release || exit 1
 
-        mkdir -p /tmp/stage/usr/bin
+		mkdir -p /tmp/stage/usr/bin
+        mkdir -p /tmp/stage/lib/systemd/system
         cp target/ubuntu/release/core /tmp/stage/usr/bin/bouclier-bleu-core || exit 1
         cp target/ubuntu/release/cli /tmp/stage/usr/bin/bouclier-bleu-cli || exit 1
+        cp /app/systemd/bouclier-bleu.service /tmp/stage/lib/systemd/system/ || exit 1
 
         gem install fpm || exit 1
         fpm -s dir -t deb -n ${APP_NAME} -v ${BB_VERSION} -C /tmp/stage . || exit 1
@@ -156,7 +164,7 @@ function build_rpm() {
 
     docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/fedora fedora:40 bash -c "
         set -e
-        dnf install -y curl make gcc clang llvm elfutils-libelf-devel zlib-devel pkg-config ruby ruby-devel rpm-build || exit 1
+        dnf install -y curl make gcc clang llvm elfutils-libelf-devel zlib-devel pkg-config ruby ruby-devel rpm-build bpftool || exit 1
         
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || exit 1
         source \$HOME/.cargo/env
@@ -164,9 +172,11 @@ function build_rpm() {
         cd /app
         cargo build --release || exit 1
 
-        mkdir -p /tmp/stage/usr/bin
+		mkdir -p /tmp/stage/usr/bin
+        mkdir -p /tmp/stage/lib/systemd/system
         cp target/fedora/release/core /tmp/stage/usr/bin/bouclier-bleu-core || exit 1
         cp target/fedora/release/cli /tmp/stage/usr/bin/bouclier-bleu-cli || exit 1
+        cp /app/systemd/bouclier-bleu.service /tmp/stage/lib/systemd/system/ || exit 1
 
         gem install fpm || exit 1
         fpm -s dir -t rpm -n ${APP_NAME} -v ${BB_VERSION} -C /tmp/stage . || exit 1

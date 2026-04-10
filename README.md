@@ -6,26 +6,55 @@
 
 <div align="center">
 <img src="https://img.shields.io/badge/version-v0.1.0--poc-blue">
+<img src="https://img.shields.io/badge/license-GPL--2.0--only-424242">
+<img src="https://img.shields.io/badge/license-Apache--2.0-a8afb3">
 </div>
 
-Created as an ambitious, modular Next-Generation Antivirus (NGAV) and Endpoint Detection and Response (EDR) system for Linux, `Bouclier Bleu` leverages eBPF (BPF LSM) in kernel-space and fearless concurrency and memory safety in user-space via Rust. 
+<p align="center">
+  <a href="#architecture-overview">Architecture Overview</a> •
+  <a href="#compilation-usage">Compilation & Usage</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#testing-pipeline">Testing Pipeline</a> •
+  <a href="#security">Security</a>
+</p>
 
-Its primary goals are to: 1.) aggressively prevent ransomware and 2.) stop memory corruption (overflows) before they compromise the system.
+---
+
+Created as a modular Next-Generation Antivirus (NGAV) and Endpoint Detection and Response (EDR) system for Linux, `Bouclier Bleu` leverages eBPF (BPF LSM) in kernel-space and memory safety in user-space via Rust. 
+
+Its primary goals are to: 1.) prevent ransomware and 2.) stop memory corruption (overflows) before they compromise the system.
 
 ## Architecture Overview
 
 `Bouclier Bleu` is designed to be modular and it is divided into four main directories:
 
-- **`core/`**: The Rust userland daemon. It loads the eBPF programs into the kernel and routes asynchronous events to the highly decoupled defense mechanisms.
-- **`bpf/`**: The kernel-space eBPF code. It hooks into Linux Security Modules (LSM) to monitor or pause execution.
-- **`modules/`**: The userland modules. Defensive mechanisms (e.g. canary files, YARA scanners) and analysis logic. 
+- **`core/`**: The Rust userland daemon. It loads the eBPF programs into the kernel and routes asynchronous events to the decoupled defense mechanisms.
+- **`bpf/`**: The kernel-space eBPF code. It hooks into Linux Security Modules (LSM) to monitor and/or pause execution.
+- **`modules/`**: The userland modules. Defensive mechanisms (e.g. canary files). 
 - **`cli/`**: The Control Plane. Allows users to toggle specific protections and interact with the core daemon on the fly.
 
 ### Modularity
 
 Each "defense capability" is implemented as a standalone module. A complete module consists of a kernel-space eBPF program (`bpf/<module>.bpf.c`) and a user-space Rust component (`modules/src/<module>.rs`).
 
+### Current Modules (Features)
+
+The EDR currently has the following defense heuristics:
+
+* **Ransomware Entropy Monitor (`rename_entropy`)** : Detects and neutralizes ransomware encryption phases in real-time. It intercepts `rename` operations (e.g., appending `.locked_xyz123`) and calculates Shannon entropy using a custom, pre-computed logarithm lookup table for O(1) integer-math execution within the eBPF virtual machine. 
+
+* **World-Writable Execution Block (`exec_block`)** : Mitigates memory corruption exploits and web-shell droppers from staging secondary payloads. It hooks into `bprm_check_security` to intercept process execution, blocking executions originating from historically insecure world-writable directories (e.g., `/tmp`, `/dev/shm`, `/var/crash`, `/run/user`).
+
+`Bouclier Bleu` is actively being developed. Upcoming modules (TODO SOON) include:
+
+* **Strong W^X (`file_mprotect`):** Enforcing strict Write XOR Execute memory policies to mitigate shellcode injection and ROP (Return-Oriented Programming) chain staging.
+
+* **Process Injection Prevention (`ptrace_access_check` / `ptrace_traceme`):** Monitoring and restricting `ptrace` capabilities to block cross-process memory tampering, hollow process injection, and credential dumping.
+
 ## Compilation & Usage
+
+> [!NOTE]
+> Pre-compiled packages `.deb` (Ubuntu/Debian) and `.rpm` (Fedora/RHEL) are available on the [GitHub Releases](https://github.com/alexandreboutrik/bouclier-bleu/releases) page. If you just want to install and use the NGAV/EDR, you do not need to build it from source.
 
 ```bash
 # If using NixOS, load the declarative dev environment first
@@ -38,11 +67,30 @@ cargo build --release
 sudo ./target/release/core
 ```
 
-We also include an automated release pipeline (`scripts/release.sh`) for cross-distribution packaging (`via fpm`), GitHub Relases, and package manager repository updates.
+We also include an automated release pipeline (`scripts/release.sh`) for cross-distribution packaging (`via fpm`), GitHub Releases, and package manager repository updates.
 
 ```bash
 ./scripts/release.sh -h
 ```
+
+## Configuration
+
+`Bouclier Bleu` can be configured via a TOML file located at `/etc/bouclier-bleu/config.toml`:
+
+```bash
+[modules]
+# Enable world-writable execution blocking
+exec_block = true
+
+# Enable ransomware entropy heuristics
+rename_entropy = true
+
+# Future modules can be toggled here
+# file_mprotect = false
+```
+
+> [!NOTE]
+> While this file dictates the default boot state, you can dynamically override these configurations at runtime without restarting the daemon by using the cli Control Plane (e.g., `sudo cli disable rename_entropy`).
 
 ## Testing Pipeline
 
@@ -58,7 +106,7 @@ We manage the testing lifecycle using a custom `xtask` runner:
 # Run all test suites
 cargo xtask test
 
-# Run a specific suit
+# Run a specific suite
 cargo xtask test component
 cargo xtask test integration
 ```

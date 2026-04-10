@@ -1,0 +1,17 @@
+[Unit]
+Description=Bouclier Bleu NGAV & EDR
+Documentation=https://github.com/alexandreboutrik/bouclier-bleu
+After=network.target auditd.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/bouclier-bleu-core
+Restart=on-failure
+RestartSec=5
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
