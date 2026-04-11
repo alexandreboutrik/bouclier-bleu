@@ -147,7 +147,6 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
             println!("\n[INFO] Initiating public Bouclier Bleu test suites...");
             execute_suite("component", None)?;
             execute_suite("integration", None)?;
-            execute_suite("benchmark", None)?;
         }
         Some(cat) => execute_suite(cat, target_test)?,
     }
