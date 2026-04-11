@@ -1,7 +1,9 @@
 [Unit]
 Description=Bouclier Bleu NGAV & EDR
 Documentation=https://github.com/alexandreboutrik/bouclier-bleu
-After=network.target auditd.service
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target
 
 [Service]
 Type=simple
@@ -10,8 +12,32 @@ Group=root
 ExecStart=/usr/bin/bouclier-bleu-core
 Restart=on-failure
 RestartSec=5
+
+# Directory Management
+RuntimeDirectory=bouclier-bleu
+ConfigurationDirectory=bouclier-bleu
+
+# eBPF-specific resource limit
+LimitMEMLOCK=infinity
+
+# Sandboxing & Security
 ProtectSystem=full
 ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target
