@@ -5,3 +5,9 @@ members = [
     "modules",
     "cli",
     "xtask"]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+authors = ["Alexandre Boutrik"]
+license = "Apache-2.0"
