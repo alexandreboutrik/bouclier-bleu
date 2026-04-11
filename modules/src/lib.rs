@@ -106,6 +106,18 @@ pub trait SecurityModule: Send + Sync {
     /// uphold memory safety across the kernel/user boundary.
     fn process_event(&self, event_data: &[u8]);
 
+    /// Pre-Load Map Sizing Heuristic
+    ///
+    /// Returns a declarative mapping of BPF Map names to their required
+    /// capacities. This is evaluated strictly during the 'Open' phase of the
+    /// eBPF lifecycle (before kernel-space memory allocation). It allows
+    /// modules to dynamically shrink or expand their Hash/Array maps based on
+    /// real-time system state (e.g., active directory counts), avoiding the
+    /// massive `RLIMIT_MEMLOCK` overhead of hardcoded worst-case scenarios.
+    fn map_capacities(&self) -> std::collections::HashMap<String, u32> {
+        std::collections::HashMap::new()
+    }
+
     /// Post-Attach Lifecycle Hook
     ///
     /// Executed synchronously immediately after the eBPF skeleton is loaded
@@ -148,6 +160,7 @@ macro_rules! define_security_module {
         slug: $slug:expr,
         parser: $parser:path,
         handler: $handler:expr
+        $(, capacities: $capacities_closure:expr)?
         $(, init: $init_closure:expr)?
     ) => {
         pub struct $struct_name {
@@ -225,6 +238,14 @@ macro_rules! define_security_module {
                         );
                     }
                 }
+            }
+
+            fn map_capacities(&self) -> std::collections::HashMap<String, u32> {
+                let mut _caps = std::collections::HashMap::new();
+                $(
+                    _caps = $capacities_closure();
+                )?
+                _caps
             }
 
             /*

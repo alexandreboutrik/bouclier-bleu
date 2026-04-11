@@ -86,7 +86,21 @@ fn main() -> Result<()> {
     let mut ringbuf_builder = RingBufferBuilder::new();
 
     for mod_name in bpf_loader::available_modules() {
-        if let Ok(skel) = bpf_loader::load_module(mod_name) {
+        /*
+         * Extract dynamic memory constraints from the userland module.
+         * This bridges the architectural gap between the module's
+         * domain-specific sizing logic and the generic BPF loader, ensuring
+         * the kernel only locks exactly the amount of RAM needed for the
+         * current system state.
+         */
+        let capacities =
+            if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
+                user_mod.map_capacities()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        if let Ok(skel) = bpf_loader::load_module(mod_name, &capacities) {
             println!("· Loaded and Attached eBPF module: {}", mod_name);
             active_skeletons.insert(mod_name.to_string(), skel);
         }
@@ -231,7 +245,15 @@ fn main() -> Result<()> {
                     } else {
                         // SLOW PATH
                         // Complete reload of the BPF program into the kernel.
-                        match bpf_loader::load_module(&target) {
+                        let capacities = if let Some(user_mod) =
+                            shared_registry.iter().find(|m| m.slug() == target)
+                        {
+                            user_mod.map_capacities()
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+
+                        match bpf_loader::load_module(&target, &capacities) {
                             Ok(skel) => {
                                 if let Err(e) = bpf_loader::set_module_state(&*skel, &target, true)
                                 {

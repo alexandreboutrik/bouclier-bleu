@@ -155,7 +155,23 @@ fn main() {
                 load_arms.push(quote! {
                     stringify!(#mod_ident) => {
                         let builder = #mod_ident::#builder_ident::default();
-                        let open_skel = builder.open().context(concat!("Failed to open ", stringify!(#mod_ident)))?;
+                        let mut open_skel = builder.open().context(concat!("Failed to open ", stringify!(#mod_ident)))?;
+
+                        /*
+                         * SPLIT-PHASE BPF LOADING & DYNAMIC MEMORY ALLOCATION
+                         * By splitting the lifecycle into `open()` (blueprint)
+                         * and `load()` (allocation), we intercept the BPF
+                         * object in user-space. This allows us to inject
+                         * dynamic, heuristically-determined map capacities
+                         * before the kernel locks any RAM, reducing the
+                         * footprint of massive tracking maps.
+                         */
+                        for (map_name, &capacity) in capacities {
+                            if let Some(map) = open_skel.obj.map_mut(map_name) {
+                                let _ = map.set_max_entries(capacity);
+                            }
+                        }
+
                         let mut skel = open_skel.load().context(concat!("Failed to load ", stringify!(#mod_ident)))?;
                         skel.attach().context(concat!("Failed to attach ", stringify!(#mod_ident)))?;
                         Ok(Box::new(skel))
@@ -229,7 +245,7 @@ fn main() {
         }
 
         /// Dispatches module loading logic dynamically based on string names.
-        pub fn load_module(name: &str) -> Result<Box<dyn Any>> {
+        pub fn load_module(name: &str, capacities: &std::collections::HashMap<String, u32>) -> Result<Box<dyn Any>> {
             match name {
                 #(#load_arms)*
                 _ => bail!("eBPF module '{}' not found.", name),

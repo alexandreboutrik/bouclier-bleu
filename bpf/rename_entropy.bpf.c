@@ -107,12 +107,17 @@ struct dir_id {
  * than vulnerable string paths. This architecture completely neutralizes mount
  * namespace evasion and bind-mount spoofing techniques commonly employed by
  * advanced adversaries to bypass static path heuristics.
+ *
+ * We now default `max_entries` to a safe 8,192 entries (~700KB) as a fallback
+ * baseline. The actual capacity is dynamically calculated and overridden by
+ * the userland daemon (via libbpf's split-phase loading) before kernel
+ * allocation occurs, ensuring O(1) lookups without extreme memory waste.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct dir_id);
     __type(value, __u8); // 1 = protected
-    __uint(max_entries, 1048576);
+    __uint(max_entries, 8192);
 } protected_dirs SEC(".maps");
 
 BOUCLIER_MODULE_ALERTS;

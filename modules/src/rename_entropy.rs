@@ -89,6 +89,44 @@ define_security_module!(
             alert.pid, alert.full_path
         );
     },
+    capacities: || -> std::collections::HashMap<String, u32> {
+        /*
+         * JUST-IN-TIME (JIT) PROTECTED_DIRS MAP SIZING HEURISTIC
+         * To maintain a lightweight EDR footprint, we perform a rapid pre-scan
+         * of the filesystem before instructing the kernel to allocate memory.
+         * We apply a 1.25x scaling factor (25% safety buffer) to accommodate
+         * future directory creations during the system's uptime. Because the
+         * Linux VFS layer heavily caches dentries, this initial pass pulls the
+         * directory metadata from disk to RAM, dramatically accelerating the
+         * subsequent `init` population pass and practically nullifying any
+         * perceived performance penalty of the double-loop.
+         */
+        let mut count = 0;
+        let target_paths = ["/home", "/var", "/etc", "/opt"];
+        let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
+
+        for path in target_paths {
+            let walker = WalkDir::new(path).into_iter().filter_entry(|e| {
+                let fname = e.file_name().to_string_lossy();
+                if !fname.starts_with('.') { return true; }
+                critical_hidden.contains(&fname.as_ref())
+            });
+
+            for entry in walker.filter_map(|e| e.ok()) {
+                if entry.file_type().is_dir() {
+                    count += 1;
+                }
+            }
+        }
+
+        // Apply a 25% safety buffer for new directories, with an absolute
+        // minimum of 8192
+        let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
+
+        let mut caps = std::collections::HashMap::new();
+        caps.insert("protected_dirs".to_string(), safe_capacity);
+        caps
+    },
     init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
         let bpf_map = provider.get_map("protected_dirs")?;
 
