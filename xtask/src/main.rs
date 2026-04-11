@@ -50,9 +50,7 @@ fn main() {
                 "  cargo xtask test component          - Runs all module component tests in VM"
             );
             eprintln!("  cargo xtask test integration        - Runs all integration tests in VM");
-            eprintln!(
-                "  cargo xtask test performance        - Runs all performance benchmarks in VM (TODO)"
-            );
+            eprintln!("  cargo xtask test benchmark          - Runs all benchmarks in VM (TODO)");
             eprintln!(
                 "  cargo xtask test <category> [test]  - Runs a specific test file within a category"
             );
@@ -104,11 +102,31 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
                     format!("cargo test -q --release --test {}", stem)
                 })?
             }
-            "performance" => {
-                println!(
-                    "\n[INFO] Executing Performance Benchmarks...\n[TODO] Pending implementation. Bypassing."
-                );
-                (Vec::new(), Duration::ZERO)
+            "benchmark" => {
+                let (res, time) =
+                    run_test_suite("Benchmark", "benchmark", "rs", target, |stem, _| {
+                        format!("cargo test -q --release --test {} -- --nocapture", stem)
+                    })?;
+
+                if let Ok(output) = Command::new("incus")
+                    .args([
+                        "exec",
+                        VM_NAME,
+                        "--",
+                        "cat",
+                        "/workspace/benchmark_results.md",
+                    ])
+                    .output()
+                {
+                    if output.status.success() {
+                        let metrics = String::from_utf8_lossy(&output.stdout).to_string();
+                        let _ = fs::write(
+                            project_root().join("tests").join("benchmark_results.md"),
+                            metrics,
+                        );
+                    }
+                }
+                (res, time)
             }
             "fuzzing" | "threat" => {
                 println!(
@@ -129,6 +147,7 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
             println!("\n[INFO] Initiating public Bouclier Bleu test suites...");
             execute_suite("component", None)?;
             execute_suite("integration", None)?;
+            execute_suite("benchmark", None)?;
         }
         Some(cat) => execute_suite(cat, target_test)?,
     }
@@ -531,6 +550,15 @@ fn generate_markdown_report(
     }
 
     report.push_str(&format!("\n## Pipeline Environment Metrics\n\n* **Initial VM Setup & Snapshot:** `{:.2}s`\n* **Cumulative Snapshot Restorations:** `{:.2}s`\n", setup_time.as_secs_f64(), restore_time.as_secs_f64()));
+
+    let bench_path = project_root().join("tests").join("benchmark_results.md");
+    if bench_path.exists() {
+        if let Ok(bench_data) = fs::read_to_string(&bench_path) {
+            report.push_str("\n");
+            report.push_str(&bench_data);
+        }
+        let _ = fs::remove_file(&bench_path);
+    }
 
     let report_path = project_root().join("tests").join("Results.md");
     fs::write(&report_path, report)?;
