@@ -189,3 +189,60 @@ impl RenameAlert {
     }
 }
 ```
+
+## Note on Dynamic Map Sizing (Split-Phase Loading)
+
+By default, eBPF maps (like `BPF_MAP_TYPE_HASH` or `BPF_MAP_TYPE_ARRAY`) require a hardcoded `max_entries` value in the C code. When the kernel loads the program, it immediately pre-allocates and locks this memory (`RLIMIT_MEMLOCK`). 
+
+If you hardcode a worst-case scenario (e.g. `1,048,576` entries for tracking files), the kernel might lock ~90MB of RAM for your module alone, even if the user only has a few thousand files.
+
+To keep `Bouclier Bleu` lightweight, the core daemon uses split-phase loading (`open()` -> mutate -> `load()`). This allows the Rust userland to intercept the BPF blueprint before the kernel allocates memory, calculate the exact capacity needed based on the current system state, and dynamically right-size the map.
+
+### How to use the `capacities` Hook
+
+To dynamically size a map, your C code should define a safe, minimal fallback for `max_entries` (e.g. `8192`). 
+
+Then, in your Rust module, utilize the optional `capacities:` closure inside the `define_security_module!` macro. This closure must return a `HashMap` linking the C-defined map name to its new dynamically calculated capacity.
+
+Here is how the `rename_entropy` module uses it to size the `protected_dirs` map:
+
+> [!NOTE]
+> The capacities hook executes strictly before the init hook. Because the Linux Virtual File System (VFS) heavily caches directory entries, scanning the disk in capacities pulls the metadata into RAM, making the second scan inside your init block nearly instantaneous.
+
+```rs
+define_security_module!(
+    struct: RenameEntropy,
+    name: "Ransomware Entropy Monitor",
+    slug: "rename_entropy",
+    parser: RenameAlert::try_from_bytes,
+    handler: |alert: RenameAlert| {
+        // ... handler logic ...
+    },
+    capacities: || -> std::collections::HashMap<String, u32> {
+        /*
+         * JUST-IN-TIME (JIT) MAP SIZING
+         * Perform a rapid pre-scan of the target directories to count 
+         * exactly how many inodes we need to protect.
+         */
+        let mut count = 0;
+        let target_paths = ["/home", "/var", "/etc", "/opt"];
+
+        // ... logic to walk directories and increment `count` ...
+
+        // Apply a 25% safety buffer for new directories created during uptime,
+        // with an absolute minimum fallback of 8192.
+        let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
+
+        let mut caps = std::collections::HashMap::new();
+        
+        // "protected_dirs" must exactly match the map name in your .bpf.c file
+        caps.insert("protected_dirs".to_string(), safe_capacity);
+        
+        caps
+    },
+    init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+        // ... standard init logic to populate the map ...
+        Ok(())
+    }
+);
+```
