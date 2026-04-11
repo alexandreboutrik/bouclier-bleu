@@ -262,16 +262,52 @@ fn main() -> Result<()> {
                                         target, e
                                     )
                                 } else {
-                                    active_skeletons.insert(target.clone(), skel);
+                                    /*
+                                     * JUST-IN-TIME (JIT) INITIALIZATION &
+                                     * SECURE FALLBACK
+                                     * By utilizing a deferred error binding
+                                     * (`init_error`), we establish a boundary.
+                                     * If the module fails to populate its
+                                     * necessary kernel state (e.g. exhaustion
+                                     * of eBPF map capacity while indexing
+                                     * hardware watchlists), we catch the
+                                     * failure immediately.
+                                     */
+                                    let mut init_error = None;
+
                                     if let Some(user_mod) =
                                         shared_registry.iter().find(|m| m.slug() == target)
                                     {
-                                        user_mod.toggle(true);
+                                        let provider = CoreMapProvider { skel: &*skel };
+
+                                        if let Err(e) = user_mod.init(&provider) {
+                                            init_error = Some(e);
+                                        }
                                     }
-                                    format!(
-                                        "SUCCESS: Defense module '{}' ENABLED and ATTACHED\n",
-                                        target
-                                    )
+
+                                    if let Some(e) = init_error {
+                                        // Failure path: Yield the error string
+                                        format!(
+                                            "ERROR: Module '{}' attached, but initialization failed: {}\n",
+                                            target, e
+                                        )
+                                    } else {
+                                        // Success path
+                                        // Store the skeleton, toggle state,
+                                        // yield success string
+                                        active_skeletons.insert(target.clone(), skel);
+
+                                        if let Some(user_mod) =
+                                            shared_registry.iter().find(|m| m.slug() == target)
+                                        {
+                                            user_mod.toggle(true);
+                                        }
+
+                                        format!(
+                                            "SUCCESS: Defense module '{}' ENABLED and ATTACHED\n",
+                                            target
+                                        )
+                                    }
                                 }
                             }
                             Err(e) => format!("ERROR: Failed to load module '{}': {}\n", target, e),

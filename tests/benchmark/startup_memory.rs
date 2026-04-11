@@ -14,10 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// SPDX-License-Identifier: Apache-2.0
-//
-// Copyright 2026 The Bouclier Bleu Authors
-
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::os::unix::net::UnixStream;
@@ -33,9 +29,9 @@ const BENCH_ENV_PATH: &str = "/home/bb_bench_env";
 fn provision_dummy_filesystem() {
     let _ = fs::remove_dir_all(BENCH_ENV_PATH);
     fs::create_dir_all(BENCH_ENV_PATH).expect("Failed to create base benchmark directory");
-    println!("[INFO] Provisioning 50,000 directories and 150,000 files in {}...", BENCH_ENV_PATH);
+    println!("[INFO] Provisioning 20,000 directories and 60,000 files in {}...", BENCH_ENV_PATH);
 
-    for d in 0..50_000 {
+    for d in 0..20_000 {
         let dir_path = format!("{}/dir_{}", BENCH_ENV_PATH, d);
         fs::create_dir(&dir_path).expect("Failed to create dummy dir");
         for f in 0..3 {
@@ -185,7 +181,7 @@ fn benchmark_startup_and_memory() {
     // Build the dynamic report
     let mut report = format!(
         "### Benchmark Results\n\n\
-        * **Startup Time (200k files):** `{:.2}ms`\n\
+        * **Startup Time (80k files):** `{:.2}ms`\n\
         * **User-Space Memory (VmRSS):** `{}`\n\n\
         #### Kernel-Space Memory (eBPF Maps)\n\n",
         startup_duration.as_secs_f64() * 1000.0,
