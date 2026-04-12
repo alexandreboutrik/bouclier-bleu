@@ -15,7 +15,11 @@
 // limitations under the License.
 
 use crate::{BpfReader, define_security_module};
+use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use sysinfo::{Pid, Signal, System};
 use walkdir::WalkDir;
 
 /// Telemetry payload yielded by the `rename_entropy` BPF hook.
@@ -28,6 +32,7 @@ use walkdir::WalkDir;
 #[derive(Debug)]
 pub struct RenameAlert {
     pub pid: u32,
+    pub ppid: u32,
     pub full_path: String,
 }
 
@@ -42,24 +47,86 @@ impl RenameAlert {
     pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         /*
          * Enforce strict structural boundaries:
-         * 4 bytes (u32 PID) + 4096 bytes (dir_path) + 256 bytes (file_name) =
-         * 4356 bytes. This validates the payload integrity before any memory
-         * reads occur.
+         * 4 bytes (u32 PID) + 4 bytes (u32 PPID) + 4096 bytes (dir_path) + 256
+         * bytes (file_name) = 4356 bytes. This validates the payload integrity
+         * before any memory reads occur.
          */
-        if data.len() < 4356 {
+        if data.len() < 4360 {
             return Err("Telemetry payload violates minimum size constraints.");
         }
 
         let mut reader = BpfReader::new(data);
 
         let pid = reader.read_u32()?;
+        let ppid = reader.read_u32()?;
         let dir_path = reader.read_string(4096)?;
         let file_name = reader.read_string(256)?;
 
         let clean_dir = dir_path.trim_end_matches('/');
         let full_path = format!("{}/{}", clean_dir, file_name);
 
-        Ok(Self { pid, full_path })
+        Ok(Self {
+            pid,
+            ppid,
+            full_path,
+        })
+    }
+}
+
+/// Temporal Heuristic State
+///
+/// Tracks occurrences of high-entropy renaming operations mapped to their
+/// parent orchestrator. Utilizing a sliding time window ensures transient,
+/// benign spikes do not result in catastrophic false-positive terminations.
+struct PpidStrike {
+    count: u32,
+    first_strike: Instant,
+}
+
+/*
+ * Decoupled State Registry
+ * As `SecurityModule` implementations are instantiated via macros and shared
+ * immutably via `Arc` across worker threads, we utilize a global OnceLock to
+ * maintain the heuristic state matrix without violating safe concurrency bounds.
+ */
+static STRIKE_TRACKER: OnceLock<Mutex<HashMap<u32, PpidStrike>>> = OnceLock::new();
+
+fn get_tracker() -> &'static Mutex<HashMap<u32, PpidStrike>> {
+    STRIKE_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Asynchronous Threat Remediation (Process Tree Eradication)
+///
+/// Neutralizes an identified orchestrator process and all active child workers.
+/// While the eBPF hook isolates and kills the offending thread instantly to
+/// prevent disk corruption (TOCTOU), this routine cleans up the surrounding
+/// malicious infrastructure to prevent re-spawning.
+fn neutralize_threat_tree(target_ppid: u32) {
+    let mut sys = System::new_all();
+    sys.refresh_processes();
+
+    let target = Pid::from_u32(target_ppid);
+
+    /*
+     * By killing the parent first, we immediately break the control loop,
+     * preventing the threat actor from dynamically spawning new worker threads
+     * while we traverse the process list.
+     */
+    if let Some(parent) = sys.process(target) {
+        parent.kill_with(Signal::Kill);
+    }
+
+    // Eradicate Sibling/Child Workers
+    for (pid, process) in sys.processes() {
+        if let Some(parent_pid) = process.parent() {
+            if parent_pid == target {
+                process.kill_with(Signal::Kill);
+                println!(
+                    "Bouclier Bleu [REMEDIATION]: Collateral worker terminated -> PID: {}",
+                    pid
+                );
+            }
+        }
     }
 }
 
@@ -79,6 +146,9 @@ define_security_module!(
     slug: "rename_entropy",
     parser: RenameAlert::try_from_bytes,
     handler: |alert: RenameAlert| {
+        let mut tracker = get_tracker().lock().unwrap();
+        let now = Instant::now();
+
         /*
          * FIXME: Forwarding to standard output for PoC.
          * Production iterations should forward this object to a SIEM
@@ -88,6 +158,41 @@ define_security_module!(
             "Bouclier Bleu [FATAL]: PID {} triggered ransomware entropy heuristic on target: {}",
             alert.pid, alert.full_path
         );
+
+        let strike = tracker.entry(alert.ppid).or_insert(PpidStrike {
+            count: 0,
+            first_strike: now,
+        });
+
+        /*
+         * Temporal Correlation Matrix (2-Second Sliding Window)
+         * Modern ransomware operates asynchronously, spawning multiple threads
+         * rapidly. If an orchestrator triggers 3 high-entropy violations within
+         * a strict 2-second window, statistical confidence of malicious intent
+         * approaches 100%, warranting an automated tree termination.
+         */
+        if now.duration_since(strike.first_strike) > Duration::from_secs(2) {
+            // Window expired. Demote risk score and reset baseline.
+            strike.count = 1;
+            strike.first_strike = now;
+        } else {
+            strike.count += 1;
+        }
+
+        if strike.count >= 3 {
+            println!(
+                "Bouclier Bleu [FATAL]: PPID {} crossed heuristic threshold (3 strikes/2s). Executing tree eradication.",
+                alert.ppid
+            );
+
+            neutralize_threat_tree(alert.ppid);
+
+            /*
+             * Flush localized state to prevent ghost-strikes if the OS recycles
+             * the PID for a future, benign process.
+             */
+            tracker.remove(&alert.ppid);
+        }
     },
     capacities: || -> std::collections::HashMap<String, u32> {
         /*

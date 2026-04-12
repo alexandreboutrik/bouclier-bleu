@@ -47,6 +47,7 @@ char LICENSE[] SEC("license") = "GPL";
  */
 struct rename_alert {
     __u32 pid;
+	__u32 ppid;
     char dir_path[PATH_MAX];
     char file_name[256];
 };
@@ -340,6 +341,16 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
             for (int i = 0; i < sizeof(*event); i++) {
                 clear_ptr[i] = 0;
             }
+
+			/*
+             * CO-RE Process Lineage Extraction
+             * Use BPF_CORE_READ to safely walk the task_struct hierarchy.
+			 * Extracting the real_parent allows the userland daemon to map 
+             * isolated worker threads back to the orchestrator.
+             */
+            struct task_struct *task = bpf_get_current_task_btf();
+            event->pid = task->tgid;
+            event->ppid = BPF_CORE_READ(task, real_parent, tgid);
 
             event->pid = bpf_get_current_pid_tgid() >> 32;
 

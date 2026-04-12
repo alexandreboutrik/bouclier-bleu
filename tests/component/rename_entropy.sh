@@ -197,6 +197,10 @@ function verify_mount_namespace_evasion() {
 
 function verify_cross_directory_evasion() {
     echo "  [*] Validating Cross-Directory Evasion Prevention (Expected: BLOCK/KILL)..."
+
+	# Let the EDR's 2-second sliding window expire so we don't accumulate 
+    # strikes against the test script.
+    sleep 2.1
     
     # ADVANCED THREAT: Moving a file FROM a protected directory (/var/...) 
     # TO an unprotected directory (/tmp/...) with a high-entropy name.
@@ -215,6 +219,10 @@ function verify_cross_directory_evasion() {
 
 function verify_deep_path_handling() {
     echo "  [*] Validating Deep Path (PATH_MAX) Boundary Handling (Expected: BLOCK/KILL)..."
+
+	# Let the EDR's 2-second sliding window expire so we don't accumulate 
+    # strikes against the test script.
+    sleep 2.1
     
     # Create a deeply nested directory path that intentionally exceeds the old 
     # 2048-byte limit but stays within the safe 4096 PATH_MAX boundary.
@@ -237,6 +245,69 @@ function verify_deep_path_handling() {
         exit 1
     fi
     echo "  [+] Deep path safely processed without truncation EFAULTs."
+}
+
+function verify_process_tree_eradication() {
+    echo "  [*] Validating Asynchronous Process Tree Eradication (Expected: KILL PPID & SIBLINGS)..."
+
+    # Provision target files for the 3 strikes
+    touch "${TEST_DIR_SENSITIVE}/strike_1"
+    touch "${TEST_DIR_SENSITIVE}/strike_2"
+    touch "${TEST_DIR_SENSITIVE}/strike_3"
+
+    # Build the mock orchestrator payload dynamically
+    local orchestrator="${TEST_DIR_SENSITIVE}/orchestrator.sh"
+    cat << EOF > "${orchestrator}"
+#!/usr/bin/env bash
+# Spawn a long-running, benign sibling process (simulating legitimate background work)
+sleep 300 &
+echo \$! > /tmp/bb_benign_sibling.pid
+
+# Strike 1
+mv "${TEST_DIR_SENSITIVE}/strike_1" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_1" > /dev/null 2>&1 &
+sleep 0.2
+
+# Strike 2
+mv "${TEST_DIR_SENSITIVE}/strike_2" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_2" > /dev/null 2>&1 &
+sleep 0.2
+
+# Strike 3 - This crosses the temporal threshold and triggers the tree kill
+mv "${TEST_DIR_SENSITIVE}/strike_3" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_3" > /dev/null 2>&1 &
+
+# Wait to be targeted by the Rust daemon's sysinfo eradication loop
+sleep 10
+EOF
+    chmod +x "${orchestrator}"
+
+    # Execute the orchestrator in the background to act as the PPID
+    "${orchestrator}" &
+    local orchestrator_pid=$!
+
+    # Allow a generous 2 seconds for the Rust daemon to aggregate the strikes 
+    # and execute the userland remediation sweep.
+    sleep 2
+
+    # Assert Orchestrator Decapitation
+    if kill -0 "${orchestrator_pid}" 2>/dev/null; then
+        echo "[-] Assertion failed: Orchestrator PPID (${orchestrator_pid}) survived 3 strikes!"
+        kill -9 "${orchestrator_pid}" 2>/dev/null || true
+        exit 1
+    fi
+
+    # Assert Sibling Eradication (Collateral cleanup)
+    if [[ -f /tmp/bb_benign_sibling.pid ]]; then
+        local sibling_pid=$(cat /tmp/bb_benign_sibling.pid)
+        if kill -0 "${sibling_pid}" 2>/dev/null; then
+            echo "[-] Assertion failed: Benign sibling (${sibling_pid}) was not eradicated!"
+            kill -9 "${sibling_pid}" 2>/dev/null || true
+            exit 1
+        fi
+    else
+        echo "[-] Test infrastructure failure: Sibling PID not recorded."
+        exit 1
+    fi
+
+    echo "  [+] Orchestrator and entire process tree successfully eradicated."
 }
 
 function verify_ipc_detachment() {
@@ -275,6 +346,7 @@ verify_unmonitored_directory
 verify_mount_namespace_evasion
 verify_cross_directory_evasion
 verify_deep_path_handling
+verify_process_tree_eradication
 verify_ipc_detachment
 
 echo "  [+] Module 'rename_entropy' validation passed."
