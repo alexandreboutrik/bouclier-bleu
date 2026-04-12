@@ -259,10 +259,15 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
         .output();
     launch_instance()?;
     await_guest_agent()?;
+
     transfer_workspace()?;
     provision_default_config()?;
     compile_workspace()?;
+
+    enforce_airgap()?;
+
     inject_kernel_parameters()?;
+    assert_no_network()?;
     create_snapshot()?;
 
     println!("[SUCCESS] VM Environment provisioned and snapshotted.");
@@ -327,11 +332,85 @@ fn ensure_base_image() -> TaskResult<()> {
     Ok(())
 }
 
+fn ensure_no_network_profile() -> TaskResult<()> {
+    println!("[INFO] Ensuring 'bb-no-network' profile is correctly configured...");
+
+    let exists = Command::new("incus")
+        .args(["profile", "show", "bb-no-network"])
+        .output()
+        .map_or(false, |o| o.status.success());
+
+    if !exists {
+        println!("[INFO] Creating 'bb-no-network' profile from default...");
+
+        execute_cmd(
+            Command::new("incus").args(["profile", "copy", "default", "bb-no-network"]),
+            "Failed to copy default profile",
+        )?;
+    } else {
+        println!("[INFO] 'bb-no-network' profile already exists.");
+    }
+
+    let remove = Command::new("incus")
+        .args(["profile", "device", "remove", "bb-no-network", "eth0"])
+        .output();
+
+    match remove {
+        Ok(output) => {
+            if output.status.success() {
+                println!("[INFO] Removed eth0 from 'bb-no-network' profile.");
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("doesn't exist") {
+                    println!("[INFO] No eth0 device present (already air-gapped).");
+                } else {
+                    return Err(format!("Failed to remove eth0 from profile:\n{}", stderr));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to execute incus profile device remove: {}",
+                e
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn assert_no_network() -> TaskResult<()> {
+    let output = Command::new("incus")
+        .args(["exec", VM_NAME, "--", "ip", "-o", "link", "show"])
+        .output()
+        .map_err(|e| format!("Failed to inspect VM network: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if stdout.contains("eth0") {
+        return Err("Air-gap violation: eth0 interface detected".into());
+    }
+
+    println!("[SECURITY] Verified: no network interfaces present.");
+    Ok(())
+}
+
+fn enforce_airgap() -> TaskResult<()> {
+    println!("[INFO] Severing network connection for test isolation...");
+    ensure_no_network_profile()?;
+
+    execute_cmd(
+        Command::new("incus").args(["profile", "assign", VM_NAME, "bb-no-network"]),
+        "Failed to assign air-gapped profile",
+    )
+}
+
 fn launch_instance() -> TaskResult<()> {
     println!(
         "[INFO] Spawning isolated guest environment ({})...",
         VM_NAME
     );
+
     execute_cmd(
         Command::new("incus").args([
             "launch",
@@ -340,6 +419,10 @@ fn launch_instance() -> TaskResult<()> {
             "--vm",
             "-c",
             "security.secureboot=false",
+            "-c",
+            "limits.cpu=4",
+            "-c",
+            "limits.memory=8GB",
         ]),
         "Guest initialization failed",
     )

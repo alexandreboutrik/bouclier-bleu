@@ -96,8 +96,8 @@ rename_entropy = true
 
 `Bouclier Bleu` uses an isolated testing infrastructure powered by `incus` to virtualize an Ubuntu 24.04 environment. This ensures that potentially destructive tests (like malware execution) do not harm the host system.
 
-> [!Warning]
-> TODO / FIXME: Risk of Lateral Attacks. While the Incus VM provides a sandboxed environment for testing, default bridged networking (`incusbr0`) may still permit lateral movement if you are executing live malware (e.g. within the restricted `threat` or `fuzzing` suites). Please exercise caution for now and ensure your host environment is strictly air-gapped or utilizing isolated network namespaces until network restrictions are implemented.
+> [!WARNING]
+> Risk of VM Escape : While the Incus test environment utilizes a hardware-virtualized sandbox (`--vm`) and is strictly air-gapped from the host network (`--network none`), executing live, weaponized malwarae/ransomware (e.g. within the `threat` suite) always carries inherent risk. Advanced threats may attempt to exploit hypervisor vulnerabilities or guest-to-host communication channels to escape the virtual machine. Please ensure your host system is fully patched, updated, and ideally isolated from sensitive environments when executing live malware.
 
 We manage the testing lifecycle using a custom `xtask` runner. Upon completion, it automatically generates a markdown report at `tests/Results.md` mapping out test statuses, durations, and environment metrics.
 
