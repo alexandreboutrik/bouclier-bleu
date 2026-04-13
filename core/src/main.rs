@@ -195,8 +195,11 @@ fn main() -> Result<()> {
 
     // MAIN ACTOR LOOP
     loop {
-        // 1. Process non-blocking IPC commands from the Control Plane
-        while let Ok(msg) = rx.try_recv() {
+        /*
+         * Process non-blocking IPC commands from the Control Plane
+         * Bound the cannel drain to a maximum of 10 messages per tick
+         */
+        for msg in rx.try_iter().take(10) {
             let response = match msg.cmd {
                 ipc::DaemonCmd::Status => {
                     "Bouclier Bleu EDR Status: Kernel Engine Running\n".to_string()
@@ -244,74 +247,12 @@ fn main() -> Result<()> {
                         }
                     } else {
                         // SLOW PATH
-                        // Complete reload of the BPF program into the kernel.
-                        let capacities = if let Some(user_mod) =
-                            shared_registry.iter().find(|m| m.slug() == target)
-                        {
-                            user_mod.map_capacities()
-                        } else {
-                            std::collections::HashMap::new()
-                        };
-
-                        match bpf_loader::load_module(&target, &capacities) {
-                            Ok(skel) => {
-                                if let Err(e) = bpf_loader::set_module_state(&*skel, &target, true)
-                                {
-                                    format!(
-                                        "ERROR: Failed to set kernel state for {}. Aborting: {}\n",
-                                        target, e
-                                    )
-                                } else {
-                                    /*
-                                     * JUST-IN-TIME (JIT) INITIALIZATION &
-                                     * SECURE FALLBACK
-                                     * By utilizing a deferred error binding
-                                     * (`init_error`), we establish a boundary.
-                                     * If the module fails to populate its
-                                     * necessary kernel state (e.g. exhaustion
-                                     * of eBPF map capacity while indexing
-                                     * hardware watchlists), we catch the
-                                     * failure immediately.
-                                     */
-                                    let mut init_error = None;
-
-                                    if let Some(user_mod) =
-                                        shared_registry.iter().find(|m| m.slug() == target)
-                                    {
-                                        let provider = CoreMapProvider { skel: &*skel };
-
-                                        if let Err(e) = user_mod.init(&provider) {
-                                            init_error = Some(e);
-                                        }
-                                    }
-
-                                    if let Some(e) = init_error {
-                                        // Failure path: Yield the error string
-                                        format!(
-                                            "ERROR: Module '{}' attached, but initialization failed: {}\n",
-                                            target, e
-                                        )
-                                    } else {
-                                        // Success path
-                                        // Store the skeleton, toggle state,
-                                        // yield success string
-                                        active_skeletons.insert(target.clone(), skel);
-
-                                        if let Some(user_mod) =
-                                            shared_registry.iter().find(|m| m.slug() == target)
-                                        {
-                                            user_mod.toggle(true);
-                                        }
-
-                                        format!(
-                                            "SUCCESS: Defense module '{}' ENABLED and ATTACHED\n",
-                                            target
-                                        )
-                                    }
-                                }
-                            }
-                            Err(e) => format!("ERROR: Failed to load module '{}': {}\n", target, e),
-                        }
+                        // We do not attempt dangerous mid-flight eBPF
+                        // compilations/loads. If it's not in
+                        format!(
+                            "ERROR: Module '{}' is not loaded in kernel memory. Check daemon boot logs or restart the service to load new modules.\n",
+                            target
+                        )
                     }
                 }
 
@@ -347,7 +288,7 @@ fn main() -> Result<()> {
             let _ = msg.reply.send(response);
         }
 
-        // 2. Service the Kernel Telemetry Queues
+        // Service the Kernel Telemetry Queues
         if let Some(rb) = &ring_buffer {
             if let Err(e) = rb.poll(Duration::from_millis(50)) {
                 eprintln!("Bouclier Bleu [Warning]: Telemetry poll interrupted: {}", e);

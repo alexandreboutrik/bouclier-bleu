@@ -139,6 +139,12 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
                         continue;
                     }
 
+                    /* Apply timeout to prevent Slowloris-style blocking */
+                    if let Err(e) = stream.set_write_timeout(Some(Duration::from_millis(100))) {
+                        eprintln!("WARNING: Failed to apply write timeout to stream: {}", e);
+                        continue;
+                    }
+
                     let mut buffer = Vec::new();
 
                     /*
@@ -168,35 +174,44 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
                                 DaemonCmd::Disable(parts[1].to_string())
                             }
                             _ => {
-                                let _ = stream.write_all(
-                                    format!("ERROR: Unknown command '{}'\n", parts[0]).as_bytes(),
-                                );
+                                let _ = stream.write_all(b"ERROR: Unknown command received.\n");
                                 continue;
                             }
                         };
 
                         let (reply_tx, reply_rx) = mpsc::channel();
 
-                        if tx
-                            .send(IpcMessage {
-                                cmd,
-                                reply: reply_tx,
-                            })
-                            .is_ok()
-                        {
-                            /*
-                             * THREAD DEADLOCK PREVENTION
-                             * We bound the wait time for the main engine's
-                             * response. If a kernel eBPF map toggle stalls or
-                             * the engine panics, this timeout ensures the IPC
-                             * thread recovers gracefully and signals the
-                             * failure back to the CLI user.
-                             */
-                            if let Ok(response) = reply_rx.recv_timeout(Duration::from_secs(5)) {
-                                let _ = stream.write_all(response.as_bytes());
-                            } else {
-                                let _ = stream
-                                    .write_all(b"ERROR: Engine operation timed out or panicked.\n");
+                        match tx.try_send(IpcMessage {
+                            cmd,
+                            reply: reply_tx,
+                        }) {
+                            Ok(_) => {
+                                /*
+                                 * THREAD DEADLOCK PREVENTION
+                                 * We bound the wait time for the main engine's
+                                 * response. If a kernel eBPF map toggle stalls
+                                 * or the engine panics, this timeout ensures
+                                 * the IPC thread recovers gracefully and
+                                 * signals the failure back to the CLI user.
+                                 */
+                                if let Ok(response) = reply_rx.recv_timeout(Duration::from_secs(5))
+                                {
+                                    let _ = stream.write_all(response.as_bytes());
+                                } else {
+                                    let _ = stream.write_all(
+                                        b"ERROR: Engine operation timed out or panicked.\n",
+                                    );
+                                }
+                            }
+                            Err(mpsc::TrySendError::Full(_)) => {
+                                let _ = stream.write_all(
+                                    b"ERROR: Daemon is busy or overwhelmed. Try again later.\n",
+                                );
+                            }
+                            Err(mpsc::TrySendError::Disconnected(_)) => {
+                                let _ = stream.write_all(
+                                    b"FATAL: Core engine has crashed. Channel disconnected.\n",
+                                );
                             }
                         }
                     }

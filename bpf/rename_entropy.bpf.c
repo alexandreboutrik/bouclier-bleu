@@ -196,7 +196,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
      */
     len = bpf_d_path((struct path *)new_dir, dir_buf, PATH_MAX);
     if (len <= 0 || len == -ENAMETOOLONG) {
-        return 0;
+        return -EPERM;
     }
 
 	/*
@@ -349,7 +349,6 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
              * isolated worker threads back to the orchestrator.
              */
             struct task_struct *task = bpf_get_current_task_btf();
-            event->pid = task->tgid;
             event->ppid = BPF_CORE_READ(task, real_parent, tgid);
 
             event->pid = bpf_get_current_pid_tgid() >> 32;

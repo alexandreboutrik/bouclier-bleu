@@ -59,7 +59,7 @@ fn send_command_to_daemon(cmd: &str) {
             // Transmit the serialized command payload
             if let Err(e) = stream.write_all(cmd.as_bytes()) {
                 eprintln!("Failed to send command over IPC: {}", e);
-                return;
+                process::exit(1);
             }
 
             /*
@@ -73,9 +73,9 @@ fn send_command_to_daemon(cmd: &str) {
 
             // Await synchronous confirmation from the core daemon's Actor loop
             let mut response = String::new();
-            if let Err(e) = stream.read_to_string(&mut response) {
+            if let Err(e) = (&mut stream).take(4096).read_to_string(&mut response) {
                 eprintln!("Failed to read daemon response: {}", e);
-                return;
+                process::exit(1);
             }
 
             println!("{}", response.trim_end());
