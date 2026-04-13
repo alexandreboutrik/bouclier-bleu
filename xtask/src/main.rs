@@ -108,24 +108,6 @@ fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()
                         format!("cargo test -q --release --test {} -- --nocapture", stem)
                     })?;
 
-                if let Ok(output) = Command::new("incus")
-                    .args([
-                        "exec",
-                        VM_NAME,
-                        "--",
-                        "cat",
-                        "/workspace/benchmark_results.md",
-                    ])
-                    .output()
-                {
-                    if output.status.success() {
-                        let metrics = String::from_utf8_lossy(&output.stdout).to_string();
-                        let _ = fs::write(
-                            project_root().join("tests").join("benchmark_results.md"),
-                            metrics,
-                        );
-                    }
-                }
                 (res, time)
             }
             "fuzzing" | "threat" => {
@@ -227,6 +209,34 @@ where
             let result = incus_exec(&cmd);
             let passed = result.is_ok();
             let elapsed = start_time.elapsed();
+
+            if dir_name == "benchmark" && passed {
+                if let Ok(output) = Command::new("incus")
+                    .args([
+                        "exec",
+                        VM_NAME,
+                        "--",
+                        "cat",
+                        "/workspace/benchmark_results.md",
+                    ])
+                    .output()
+                {
+                    if output.status.success() {
+                        let metrics = String::from_utf8_lossy(&output.stdout).to_string();
+                        let bench_path = project_root().join("tests").join("benchmark_results.md");
+
+                        // Append to the host-side file
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&bench_path)
+                        {
+                            use std::io::Write;
+                            let _ = file.write_all(metrics.as_bytes());
+                        }
+                    }
+                }
+            }
 
             if result.is_ok() {
                 println!("[SUCCESS] Passed: {}", display_name);
