@@ -28,6 +28,7 @@ set -uo pipefail
 : "${TEST_UNMONITORED:="/var/crash/bb_test_payload"}"
 : "${TEST_LONG_PATH_BASE:="/tmp/bb_long_path_test"}"
 : "${DAEMON_LOG:="/tmp/bb_daemon_path.log"}"
+: ${BB_DROPPER="/tmp/bb_memfd_dropper"}
 : "${EPERM_EXIT_CODE:=126}"
 
 DAEMON_PID=""
@@ -41,7 +42,7 @@ function teardown() {
     if [[ -n "${DAEMON_PID}" ]]; then
         kill -9 "${DAEMON_PID}" 2>/dev/null || true
     fi
-    rm -f "${TEST_PAYLOAD}" "${TEST_SYMLINK}" "${TEST_UNMONITORED}" "${DAEMON_LOG}"
+    rm -f "${TEST_PAYLOAD}" "${TEST_SYMLINK}" "${TEST_UNMONITORED}" "${DAEMON_LOG}" "${BB_DROPPER}"
     cd "${ORIGINAL_DIR}" || true
 }
 
@@ -78,6 +79,53 @@ function provision_payload() {
 
     chmod +x "${TEST_UNMONITORED}" ||
         { echo "[-] Failed to assign execution permissions to unmonitored payload."; exit 1; }
+}
+
+function provision_memfd_dropper() {
+    echo "  [*] Compiling inline memfd dropper utility..."
+    local dropper_c="${BB_DROPPER}.c"
+    
+    cat << 'EOF' > "${dropper_c}"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/prctl.h>
+#include <string.h>
+
+int main(int argc, char *argv[]) {
+    if (argc > 1 && strcmp(argv[1], "spoof") == 0) {
+        prctl(PR_SET_NAME, "systemd", 0, 0, 0);
+    }
+
+    int fd = memfd_create("dropper_test", 0); // Unsealed memory descriptor
+    if (fd < 0) return 1;
+
+    int src = open("/usr/bin/true", O_RDONLY);
+    if (src < 0) return 1;
+
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(src, buf, sizeof(buf))) > 0) {
+        write(fd, buf, n);
+    }
+    close(src);
+
+    char *exec_argv[] = {"true", NULL};
+    char *exec_envp[] = {NULL};
+
+    fexecve(fd, exec_argv, exec_envp);
+    
+    // If we reach here, fexecve failed (blocked by eBPF -EPERM)
+    return 126; 
+}
+EOF
+
+    cc -o "${BB_DROPPER}" "${dropper_c}" ||
+		{ echo "[-] Failed to compile memfd dropper."; exit 1; }
+    rm -f "${dropper_c}"
 }
 
 function initialize_daemon() {
@@ -240,10 +288,70 @@ function verify_path_length_evasion() {
     echo "  [+] Path length evasion successfully vetoed (Program safely failed CLOSED or buffer was expanded)."
 }
 
+function verify_mount_namespace_evasion() {
+    echo "  [*] Validating Mount Namespace Evasion (Expected: BLOCK)..."
+    
+    local EVASION_DIR="/root/bb_exec_evasion"
+    mkdir -p "${EVASION_DIR}"
+    
+    local payload_name
+    payload_name=$(basename "${TEST_PAYLOAD}")
+    
+    set +e
+    # -U: New user namespace, -r: Map to root, -m: New mount namespace
+    # Bind mount the protected /tmp directory into an unmonitored location 
+    # (/root/...) and attempt execution. Before the fix, bpf_d_path would 
+    # resolve to /root/... and fail-open.
+    unshare -Ur -m bash -c "
+        mount --bind /tmp '${EVASION_DIR}'
+        '${EVASION_DIR}/${payload_name}' > /dev/null 2>&1
+    "
+    local exit_code=$?
+    set -e
+
+    # Exit codes 126 or 1 are standard returns for -EPERM
+    if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]] && [[ "${exit_code}" -ne 1 ]]; then
+        echo "[-] Assertion failed: Mount namespace bind evasion was successful! Execution permitted."
+        exit 1
+    fi
+    echo "  [+] Mount namespace evasion successfully thwarted (Hardware inode validated)."
+}
+
+function verify_memfd_execution() {
+    echo "  [*] Validating Fileless Execution (memfd_create) Mitigation (Expected: BLOCK)..."
+    
+    set +e
+    "${BB_DROPPER}" > /dev/null 2>&1
+    local exit_code=$?
+    set -e
+
+    if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]] && [[ "${exit_code}" -ne 1 ]]; then
+        echo "[-] Assertion failed: Unsealed memfd execution was permitted!"
+        exit 1
+    fi
+    echo "  [+] Unsealed fileless execution successfully thwarted."
+}
+
+function verify_memfd_prctl_spoofing() {
+    echo "  [*] Validating Fileless Execution with prctl() 'systemd' Spoofing (Expected: BLOCK)..."
+    
+    set +e
+    "${BB_DROPPER}" spoof > /dev/null 2>&1
+    local exit_code=$?
+    set -e
+
+    if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]] && [[ "${exit_code}" -ne 1 ]]; then
+        echo "[-] Assertion failed: prctl() spoofed memfd execution was permitted!"
+        exit 1
+    fi
+    echo "  [+] Spoofed fileless execution successfully thwarted (Seal Inspection held)."
+}
+
 # ==========================================
 # ENTRYPOINT
 # ==========================================
 provision_payload
+provision_memfd_dropper
 initialize_daemon
 
 verify_active_blocking
@@ -252,5 +360,8 @@ verify_path_normalization_bypass
 verify_symlink_bypass
 verify_unmonitored_paths
 verify_path_length_evasion
+verify_mount_namespace_evasion
+verify_memfd_execution
+verify_memfd_prctl_spoofing
 
 echo "  [+] Module 'exec_block_path' validation passed."

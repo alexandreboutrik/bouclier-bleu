@@ -26,7 +26,6 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-#define EPERM 1
 #define PATH_MAX 4096
 #define NAME_MAX 255
 
@@ -109,10 +108,10 @@ struct dir_id {
  * namespace evasion and bind-mount spoofing techniques commonly employed by
  * advanced adversaries to bypass static path heuristics.
  *
- * We now default `max_entries` to a safe 8,192 entries (~700KB) as a fallback
- * baseline. The actual capacity is dynamically calculated and overridden by
- * the userland daemon (via libbpf's split-phase loading) before kernel
- * allocation occurs, ensuring O(1) lookups without extreme memory waste.
+ * We set `max_entries` to a safe 8,192 entries as a fallback baseline. The
+ * actual capacity is dynamically calculated and overridden by the userland
+ * daemon (via libbpf's split-phase loading) before kernel allocation occurs,
+ * ensuring O(1) lookups without extreme memory waste.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
