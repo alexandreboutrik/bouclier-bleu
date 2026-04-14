@@ -169,11 +169,6 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
         return 0;
     }
 
-    dir_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
-    if (!dir_buf) {
-        return 0;
-    }
-
 	scratch = bpf_map_lookup_elem(&scratch_map, &key);
     if (!scratch) {
         return 0;
@@ -187,16 +182,6 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
      */
     __builtin_memset(scratch->name, 0, sizeof(scratch->name));
     __builtin_memset(scratch->counts, 0, sizeof(scratch->counts));
-
-	/*
-     * Path Resolution
-     * Resolve the absolute path of the destination directory to ensure the
-     * telemetry payload accurately reflects the filesystem hierarchy.
-     */
-    len = bpf_d_path((struct path *)new_dir, dir_buf, PATH_MAX);
-    if (len <= 0 || len == -ENAMETOOLONG) {
-        return -EPERM;
-    }
 
 	/*
      * Cross-Directory Migration Evasion Prevention
@@ -304,6 +289,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
 	__u32 sum_c_log_c = 0;
     for (int i = 0; i < 256; i++) {
         __u32 c = scratch->counts[i] & 0xFF;
+		if (c == 0) continue; // skip math for chars not present in the fname
         sum_c_log_c += c * scaled_log2[c];
     }
 
@@ -354,7 +340,14 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
 
             event->pid = bpf_get_current_pid_tgid() >> 32;
 
-            bpf_probe_read_kernel_str(event->dir_path, sizeof(event->dir_path), dir_buf);
+            dir_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
+            if (dir_buf) {
+                len = bpf_d_path((struct path *)new_dir, dir_buf, PATH_MAX);
+                if (len > 0 && len != -ENAMETOOLONG) {
+                    bpf_probe_read_kernel_str(event->dir_path, sizeof(event->dir_path), dir_buf);
+                }
+            }
+
             bpf_probe_read_kernel_str(event->file_name, sizeof(event->file_name), scratch->name);
 
             bpf_ringbuf_submit(event, 0);
