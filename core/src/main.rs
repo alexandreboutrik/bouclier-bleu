@@ -57,7 +57,7 @@ impl<'a> modules::MapProvider for CoreMapProvider<'a> {
 }
 
 fn main() -> Result<()> {
-    println!("🛡️ Starting Bouclier Bleu Core Engine...");
+    println!("* Starting Bouclier Bleu Core Engine...");
 
     let daemon_config = config::DaemonConfig::load();
 

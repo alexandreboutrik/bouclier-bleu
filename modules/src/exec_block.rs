@@ -15,8 +15,8 @@
 // limitations under the License.
 
 use crate::{BpfReader, define_security_module};
-use walkdir::WalkDir;
 use std::os::unix::fs::MetadataExt;
+use walkdir::WalkDir;
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
 ///
@@ -61,7 +61,7 @@ impl ExecAlert {
  */
 define_security_module!(
     struct: ExecBlock,
-    name: "Exec Block (/tmp, /dev/shm)",
+    name: "Untrusted Path Execution Prevention",
     slug: "exec_block",
     parser: ExecAlert::try_from_bytes,
     handler: |alert: ExecAlert| {
@@ -81,7 +81,7 @@ define_security_module!(
          */
         let mut count = 0;
         let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
-        
+
         for path in target_paths {
             for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_dir() {
@@ -89,18 +89,18 @@ define_security_module!(
                 }
             }
         }
-        
+
         // Apply a 25% safety buffer for new directories, with an absolute
         // minimum of 8192
         let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
-        
+
         let mut caps = std::collections::HashMap::new();
         caps.insert("protected_dirs".to_string(), safe_capacity);
         caps
     },
     init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
         let bpf_map = provider.get_map("protected_dirs")?;
-        
+
         let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
         let is_protected: [u8; 1] = [1];
 

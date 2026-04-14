@@ -85,7 +85,7 @@ struct dir_id {
  * userland daemon prior to kernel allocation.
  */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct dir_id);
     __type(value, __u8); // 1 = protected
     __uint(max_entries, 8192);
@@ -144,33 +144,25 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 
 	/*
      * Fileless Execution (memfd_create) Mitigation
-     * Advanced droppers execute payloads directly from memory to bypass on-disk 
-     * heuristics. The dentry name is consistently prefixed with "memfd:".
+	 * Attackers bypass on-disk heuristics using memory-backed payloads via
+	 * `memfd_create` or nameless temporary files via `open(..., O_TMPFILE |
+	 * O_RDWR)`. Relying on the "memfd:" prefix in the dentry cache is insecure
+	 * as O_TMPFILE does not set it. Instead, we validate the underlying VFS
+	 * link count (`i_nlink`). Both anonymous memory files and O_TMPFILE
+	 * creations share a fundamental characteristic: they have zero hard
+	 * links.
      */
-    const unsigned char *d_name = BPF_CORE_READ(dentry, d_name.name);
-    char fname[7]; // Size 7 to safely capture "memfd:\0"
-    bpf_probe_read_kernel_str(fname, sizeof(fname), d_name);
-    
-    if (fname[0] == 'm' && fname[1] == 'e' && fname[2] == 'm' && 
-        fname[3] == 'f' && fname[4] == 'd' && fname[5] == ':') {
-        
-        /*
-         * Seal Inspection Heuristic (Behavioral Validation)
-         * We explicitly DO NOT use `bpf_get_current_comm()` to allowlist
-		 * processes like 'systemd' or 'runc', as thread names are trivially
-		 * spoofable via prctl(PR_SET_NAME). Instead, we validate the execution
-		 * behavior. Legitimate users of memfd lock the memory segment using
-		 * F_SEAL_WRITE (0x0008) prior to execution to guarantee immutability.
-		 * Malware droppers leave it unsealed (writable) to stream staging
-		 * payloads.
-         */
-        struct inode *f_inode = BPF_CORE_READ(file, f_inode);
-        
+	struct inode *f_inode = BPF_CORE_READ(file, f_inode);
+    __u32 i_nlink = BPF_CORE_READ(f_inode, i_nlink);
+
+    if (i_nlink == 0) {
 		/*
-         * CO-RE Container-Of Lookup
-         * We use Clang's `__builtin_preserve_field_info` directly (with flag 0 for
-		 * BPF_FIELD_BYTE_OFFSET) to calculate the relocatable offset. This avoids
-		 * missing libbpf macro errors across different distributions.
+         * Seal Inspection Heuristic (Behavioral Validation)
+         * Legitimate processes lock the memory segment using F_SEAL_WRITE
+		 * (0x0008) prior to execution to guarantee immutability. Malware
+		 * droppers leave it unsealed (writable) to stream staging payloads.
+		 * CO-RE Container-Of Lookup is used to avoid missing libbpf macro
+		 * errors across different distributions.
          */
         size_t offset = __builtin_preserve_field_info(((struct shmem_inode_info *)0)->vfs_inode, 0);
         struct shmem_inode_info *info = (struct shmem_inode_info *)((void *)f_inode - offset);
@@ -256,7 +248,55 @@ int BPF_PROG(exec_block_vfs_mkdir_exit, struct mnt_idmap *idmap, struct inode *d
         child_id.dev = BPF_CORE_READ(dentry, d_sb, s_dev);
         
         __u8 val = 1;
-        bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
+        int err = bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
+        
+        /*
+         * BPF Map Exhaustion Handling
+         * eBPF maps cannot be dynamically resized post-allocation. If an
+		 * attacker triggers a loop to create thousands of directories, the map
+		 * will fill up, and `bpf_map_update_elem` will return -E2BIG. We must
+		 * intercept this to prevent a fail-open scenario where subsequent
+		 * malicious directories go unmonitored.
+         */
+        if (err) {
+            bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted! Fail-open state.\n");
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Dynamic Watchlist Inheritance (Rename)
+ * An attacker stages a malicious binary inside an obscure, unprotected
+ * directory (e.g., /var/lib/...) and subsequently moves (renames) the entire
+ * staging directory into a protected path like /tmp. Because a same-filesystem
+ * move does not alter the inode and does not trigger `vfs_mkdir`, the system
+ * remains blind to the new location. This hook monitors directory moves. If an
+ * unprotected directory is moved into a currently protected directory, it
+ * immediately inherits the parent's protection status to close the evasion
+ * loophole.
+ */
+SEC("fexit/vfs_rename")
+int BPF_PROG(exec_block_vfs_rename_exit, struct renamedata *rd, int ret) 
+{
+    if (ret != 0 || !is_module_active(&state_map)) {
+        return 0;
+    }
+
+    struct dir_id target_parent_id = {};
+    target_parent_id.ino = BPF_CORE_READ(rd, new_dir, i_ino);
+    target_parent_id.dev = BPF_CORE_READ(rd, new_dir, i_sb, s_dev);
+
+    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &target_parent_id);
+
+    if (is_protected && *is_protected == 1) {
+        struct dir_id moved_id = {};
+        moved_id.ino = BPF_CORE_READ(rd, old_dentry, d_inode, i_ino);
+        moved_id.dev = BPF_CORE_READ(rd, old_dentry, d_sb, s_dev);
+        
+        __u8 val = 1;
+        bpf_map_update_elem(&protected_dirs, &moved_id, &val, BPF_ANY);
     }
 
     return 0;

@@ -114,7 +114,7 @@ struct dir_id {
  * ensuring O(1) lookups without extreme memory waste.
  */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct dir_id);
     __type(value, __u8); // 1 = protected
     __uint(max_entries, 8192);
@@ -223,7 +223,8 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
     }
 
 	/* Target Filename Extraction */
-    __u32 nlen = BPF_CORE_READ(new_dentry, d_name.len);
+	__u32 original_nlen = BPF_CORE_READ(new_dentry, d_name.len);
+    __u32 nlen = original_nlen;
 
 	/*
 	 * Secure bounds clamping to satisfy the verifier without wrap-around
@@ -256,9 +257,10 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
 	 * generate highly randomized filenames that inherently trip entropy
 	 * heuristics. We inspect the suffix directly in memory to bypass
 	 * calculation for known safe extensions, reducing false positives in
-	 * critical system paths.
+	 * critical system paths. Use original_nlen instead of nlen to prevent
+	 * truncation bugs.
      */
-    if (nlen >= 4) {
+    if (original_nlen >= 4 && original_nlen <= 255) {
 		/*
 		 * Re-assert bounds to the verifier using bitwise masking.
          * This is strictly required because 'nlen' bounds are lost to the 
@@ -388,7 +390,52 @@ int BPF_PROG(rename_entropy_vfs_mkdir_exit, struct mnt_idmap *idmap, struct inod
         child_id.dev = BPF_CORE_READ(dentry, d_sb, s_dev);
         
         __u8 val = 1;
-        bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
+		int err = bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
+        
+        /*
+         * BPF Map Exhaustion Handling
+         * eBPF maps cannot be dynamically resized post-allocation. If an
+		 * attacker triggers a loop to create thousands of directories, the map
+		 * will fill up, and `bpf_map_update_elem` will return -E2BIG. We
+		 * intercept this to log a critical failure.
+         */
+        if (err) {
+            bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted in rename_entropy! Fail-open state.\n");
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Dynamic Watchlist Inheritance (rename)
+ * An attacker stages a malicious payload in an unmonitored directory (e.g.
+ * /tmp/staging) and moves the entire directory into a protected path like
+ * /home/user/. Because moving a directory does not change its inode or trigger
+ * `vfs_mkdir`, the system remains blind. This hook monitors directory moves.
+ * If an unprotected directory is moved into a currently protected directory,
+ * it immediately inherits the parent's protection status.
+ */
+SEC("fexit/vfs_rename")
+int BPF_PROG(rename_entropy_vfs_rename_exit, struct renamedata *rd, int ret) 
+{
+    if (ret != 0 || !is_module_active(&state_map)) {
+        return 0;
+    }
+
+    struct dir_id target_parent_id = {};
+    target_parent_id.ino = BPF_CORE_READ(rd, new_dir, i_ino);
+    target_parent_id.dev = BPF_CORE_READ(rd, new_dir, i_sb, s_dev);
+
+    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &target_parent_id);
+
+    if (is_protected && *is_protected == 1) {
+        struct dir_id moved_id = {};
+        moved_id.ino = BPF_CORE_READ(rd, old_dentry, d_inode, i_ino);
+        moved_id.dev = BPF_CORE_READ(rd, old_dentry, d_sb, s_dev);
+        
+        __u8 val = 1;
+        bpf_map_update_elem(&protected_dirs, &moved_id, &val, BPF_ANY);
     }
 
     return 0;

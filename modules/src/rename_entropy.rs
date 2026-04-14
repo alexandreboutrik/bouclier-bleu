@@ -142,7 +142,7 @@ fn neutralize_threat_tree(target_ppid: u32) {
  */
 define_security_module!(
     struct: RenameEntropy,
-    name: "Ransomware Entropy Monitor",
+    name: "Ransomware Rename Entropy Monitor",
     slug: "rename_entropy",
     parser: RenameAlert::try_from_bytes,
     handler: |alert: RenameAlert| {

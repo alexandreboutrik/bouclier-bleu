@@ -53,6 +53,9 @@ The EDR currently has the following defense heuristics:
 
 ## Compilation & Usage
 
+> [!IMPORTANT]  
+> You must be running Linux kernel version **5.12 or higher** to support the `renamedata` structure and `bpf_d_path` execution paths. Additionally, your kernel must support BPF Security Modules (`CONFIG_BPF_LSM=y`), which may require enabling it at boot by appending `lsm=landlock,lockdown,yama,apparmor,bpf` to your GRUB boot parameters.
+
 > [!NOTE]
 > Pre-compiled packages `.deb` (Ubuntu/Debian) and `.rpm` (Fedora/RHEL) are available on the [GitHub Releases](https://github.com/alexandreboutrik/bouclier-bleu/releases) page. If you just want to install and use the NGAV/EDR, you do not need to build it from source.
 
@@ -112,6 +115,7 @@ cargo xtask test
 # Run a specific suite
 cargo xtask test component
 cargo xtask test integration
+cargo xtask test benchmark
 ```
 
 > [!Note]
