@@ -125,6 +125,67 @@ function init_env() {
 		{ echo "Failed to create dist directory. Exiting." ; exit 1 ; }
 }
 
+function prepare_cargo_release() {
+    if [ "${BB_HELP}" == "1" ] ; then return ; fi
+
+    echo -e "\n➤ Checking versions in Cargo.toml files and README.md..."
+
+    local CARGO_FILES=(
+        "Cargo.toml"
+        "core/Cargo.toml"
+        "modules/Cargo.toml"
+        "cli/Cargo.toml"
+        "xtask/Cargo.toml"
+    )
+
+    local CHANGES_MADE=0
+
+    for file in "${CARGO_FILES[@]}"; do
+        if [ -f "${file}" ]; then
+            # Check if the file already has the correct version
+            if grep -q "^version = \"${BB_VERSION}\"" "${file}"; then
+                echo "  ${file} is already at v${BB_VERSION}, skipping..."
+            else
+                # Matches 'version = "..."' at the start of a line
+                sed -i "s/^version = \".*\"/version = \"${BB_VERSION}\"/" "${file}" || 
+                    { echo "Failed to update version in ${file}. Exiting." ; exit 1 ; }
+                echo "  Updated ${file} to v${BB_VERSION}"
+                CHANGES_MADE=1
+            fi
+        else
+            echo "  Warning: ${file} not found, skipping..."
+        fi
+    done
+
+    if [ -f "README.md" ]; then
+        if grep -q "badge/version-v${BB_VERSION}--alpha-blue" README.md; then
+            echo "  README.md is already at v${BB_VERSION}, skipping..."
+        else
+            sed -i "s/badge\/version-v.*--alpha-blue/badge\/version-v${BB_VERSION}--alpha-blue/" README.md || 
+                { echo "Failed to update version in README.md. Exiting." ; exit 1 ; }
+            echo "  Updated README.md to v${BB_VERSION}"
+            CHANGES_MADE=1
+        fi
+    else
+        echo "  Warning: README.md not found, skipping..."
+    fi
+
+    if [ "${CHANGES_MADE}" -eq 1 ]; then
+        echo -e "\n➤ Updating Cargo.lock dependencies..."
+        cargo update || 
+            { echo "Failed to run 'cargo update'. Make sure cargo is installed on the host. Exiting." ; exit 1 ; }
+
+        echo -e "\n➤ Committing release preparation..."
+        git add "${CARGO_FILES[@]}" README.md Cargo.lock || 
+            { echo "Failed to stage release files. Exiting." ; exit 1 ; }
+        
+        git commit -m "chore(release): prepare v${BB_VERSION}" || 
+            { echo "Failed to create release commit. Exiting." ; exit 1 ; }
+    else
+        echo -e "\n➤ All files are already up to date. Skipping cargo update and git commit."
+    fi
+}
+
 function build_deb() {
     if [ "${BB_BUILD_DEB}" != "1" ] ; then return ; fi
 
@@ -307,6 +368,7 @@ print_help
 
 # Standard execution flow
 init_env
+prepare_cargo_release
 build_deb
 build_rpm
 create_github_release
