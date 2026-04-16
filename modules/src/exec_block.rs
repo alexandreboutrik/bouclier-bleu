@@ -15,7 +15,6 @@
 // limitations under the License.
 
 use crate::{BpfReader, define_security_module};
-use std::os::unix::fs::MetadataExt;
 use walkdir::WalkDir;
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
@@ -120,34 +119,7 @@ define_security_module!(
                 // System-level Inode Extraction
                 if entry.file_type().is_dir() {
                     if let Ok(metadata) = entry.metadata() {
-                        /*
-                         * Cross-Device Composite Key Construction
-                         * Inodes are only guaranteed unique per-superblock. To
-                         * prevent map collisions in multi-disk setups, we
-                         * construct a 16-byte composite key combining the u64
-                         * Inode and the u32 Device ID.
-                         */
-                        let ino = metadata.ino();
-                        let user_dev = metadata.dev();
-
-                        /*
-                         * User-to-Kernel dev_t Translation
-                         * The userland `metadata.dev()` returns a 64-bit
-                         * encoded device ID (glibc st_dev). The kernel's
-                         * `s_dev` is a 32-bit internal format ((major << 20)
-                         * | minor). We must manually decode the userland ID
-                         * and reconstruct the kernel's format to ensure eBPF
-                         * map lookups align globally.
-                         */
-                        let major = ((user_dev & 0x00000000000fff00) >> 8) | ((user_dev & 0xfffff00000000000) >> 32);
-                        let minor = (user_dev & 0x00000000000000ff) | ((user_dev & 0x00000ffffff00000) >> 12);
-                        let kernel_dev = ((major as u32) << 20) | (minor as u32);
-
-                        let mut key_bytes = [0u8; 16];
-                        key_bytes[0..8].copy_from_slice(&ino.to_ne_bytes());
-                        key_bytes[8..12].copy_from_slice(&kernel_dev.to_ne_bytes());
-                        // Bytes 12..16 inherently remain 0 as padding
-
+                        let key_bytes = crate::generate_hardware_key(&metadata);
                         let _ = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY);
                     }
                 }

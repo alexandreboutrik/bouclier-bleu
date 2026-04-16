@@ -268,18 +268,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
 
         event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
         if (event) {
-			/*
-             * BPF Verifier Standard Library Restrictions
-			 * Clang's BPF backend cannot safely inline `memset` for large
-			 * structs (>512 bytes), resulting in a forbidden external function
-			 * call. We utilize a volatile bounded loop to safely zero the
-			 * memory block and explicitly defeat Clang's auto-memset
-			 * optimization passes.
-             */
-            volatile __u8 *clear_ptr = (volatile __u8 *)event;
-            for (int i = 0; i < sizeof(*event); i++) {
-                clear_ptr[i] = 0;
-            }
+			BPF_SAFE_MEMSET(event, sizeof(*event));
 
 			/*
              * CO-RE Process Lineage Extraction

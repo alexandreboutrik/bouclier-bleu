@@ -163,6 +163,8 @@ block_exec:
     event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
     
     if (event) {
+		BPF_SAFE_MEMSET(event, sizeof(*event));
+
         // populate the Process ID (Higher 32 bits are TGID, lower are PID)
         event->pid = bpf_get_current_pid_tgid() >> 32;
 
