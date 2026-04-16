@@ -1,7 +1,12 @@
 #ifndef __MODULE_CORE_H
 #define __MODULE_CORE_H
 
+#include "../include/vmlinux.h"
 #include <bpf/bpf_helpers.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /**
  * BOUCLIER_MODULE_ALERTS - Standardized Telemetry RingBuffer

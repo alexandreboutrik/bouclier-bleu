@@ -23,14 +23,13 @@
 #include <asm-generic/errno.h>
 
 #include "headers/module_core.h"
+#include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
 #ifndef F_SEAL_WRITE
 #define F_SEAL_WRITE 0x008
 #endif
-
-#define PATH_MAX 4096
 
 /**
  * struct exec_alert - Telemetry Payload Contract
@@ -45,52 +44,8 @@ struct exec_alert {
     char path[PATH_MAX];
 };
 
-/**
- * path_buffer_map - Canonical Path Resolution Buffer
- *
- * eBPF programs are strictly constrained by a 512-byte stack limit. To
- * securely resolve absolute execution paths (PATH_MAX = 4096) without
- * triggering -ENAMETOOLONG fail-open vulnerabilities, we allocate a dedicated
- * memory segment. We utilize BPF_MAP_TYPE_PERCPU_ARRAY to provide a lock-free,
- * zero-contention memory region dedicated to each CPU core, maintaining O(1)
- * latency.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, __u32);
-    __type(value, char[PATH_MAX]);
-    __uint(max_entries, 1);
-} path_buffer_map SEC(".maps");
-
-/**
- * struct dir_id - Cross-Device Unique Directory Identifier
- * @ino: The physical inode number.
- * @dev: The filesystem device ID (Superblock).
- * @_pad: Explicit padding to ensure stable 16-byte alignment.
- */
-struct dir_id {
-    __u64 ino;
-    __u32 dev;
-    __u32 _pad;
-};
-
-/**
- * protected_dirs - Hardware-Backed Directory Watchlist
- *
- * Relies on the physical Inode (`ino`) and Superblock Device ID (`dev`) rather
- * than vulnerable string paths. This architecture completely neutralizes mount
- * namespace evasion (`unshare -m`) and bind-mount spoofing techniques commonly
- * employed by advanced adversaries to bypass static path heuristics.
- * The maximum capacity is dynamically calculated and overridden by the
- * userland daemon prior to kernel allocation.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct dir_id);
-    __type(value, __u8); // 1 = protected
-    __uint(max_entries, 8192);
-} protected_dirs SEC(".maps");
-
+BOUCLIER_PATH_BUFFER_MAP;
+BOUCLIER_PROTECTED_DIRS_MAP;
 BOUCLIER_MODULE_ALERTS;
 BOUCLIER_MODULE_STATE_MAP;
 
@@ -128,8 +83,7 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
     struct dentry *parent = BPF_CORE_READ(dentry, d_parent);
 
     struct dir_id p_id = {};
-    p_id.ino = BPF_CORE_READ(parent, d_inode, i_ino);
-    p_id.dev = BPF_CORE_READ(parent, d_sb, s_dev);
+	extract_dir_id_from_dentry(parent, &p_id);
 
     __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &p_id);
     if (is_protected && *is_protected == 1) {
@@ -236,32 +190,12 @@ int BPF_PROG(exec_block_vfs_mkdir_exit, struct mnt_idmap *idmap, struct inode *d
     }
 
     struct dir_id parent_id = {};
-    parent_id.ino = BPF_CORE_READ(dir, i_ino);
-    parent_id.dev = BPF_CORE_READ(dir, i_sb, s_dev);
+	struct dir_id child_id = {};
+    
+    extract_dir_id_from_inode(dir, &parent_id);
+    extract_dir_id_from_dentry(dentry, &child_id);
 
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &parent_id);
-
-    // Inherit protection for the new child directory
-    if (is_protected && *is_protected == 1) {
-        struct dir_id child_id = {};
-        child_id.ino = BPF_CORE_READ(dentry, d_inode, i_ino);
-        child_id.dev = BPF_CORE_READ(dentry, d_sb, s_dev);
-        
-        __u8 val = 1;
-        int err = bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
-        
-        /*
-         * BPF Map Exhaustion Handling
-         * eBPF maps cannot be dynamically resized post-allocation. If an
-		 * attacker triggers a loop to create thousands of directories, the map
-		 * will fill up, and `bpf_map_update_elem` will return -E2BIG. We must
-		 * intercept this to prevent a fail-open scenario where subsequent
-		 * malicious directories go unmonitored.
-         */
-        if (err) {
-            bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted! Fail-open state.\n");
-        }
-    }
+    inherit_protection(&protected_dirs, &parent_id, &child_id, "exec_block");
 
     return 0;
 }
@@ -285,19 +219,12 @@ int BPF_PROG(exec_block_vfs_rename_exit, struct renamedata *rd, int ret)
     }
 
     struct dir_id target_parent_id = {};
-    target_parent_id.ino = BPF_CORE_READ(rd, new_dir, i_ino);
-    target_parent_id.dev = BPF_CORE_READ(rd, new_dir, i_sb, s_dev);
+	struct dir_id moved_id = {};
+    
+    extract_dir_id_from_inode(BPF_CORE_READ(rd, new_dir), &target_parent_id);
+    extract_dir_id_from_dentry(BPF_CORE_READ(rd, old_dentry), &moved_id);
 
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &target_parent_id);
-
-    if (is_protected && *is_protected == 1) {
-        struct dir_id moved_id = {};
-        moved_id.ino = BPF_CORE_READ(rd, old_dentry, d_inode, i_ino);
-        moved_id.dev = BPF_CORE_READ(rd, old_dentry, d_sb, s_dev);
-        
-        __u8 val = 1;
-        bpf_map_update_elem(&protected_dirs, &moved_id, &val, BPF_ANY);
-    }
+    inherit_protection(&protected_dirs, &target_parent_id, &moved_id, "exec_block");
 
     return 0;
 }

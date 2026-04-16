@@ -23,10 +23,10 @@
 #include <asm-generic/errno.h>
 
 #include "headers/module_core.h"
+#include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
-#define PATH_MAX 4096
 #define NAME_MAX 255
 
 /* Scaled Entropy Threshold (4.2 * 1024 = 4300)
@@ -51,21 +51,10 @@ struct rename_alert {
     char file_name[256];
 };
 
-/**
- * path_buffer_map - Canonical Path Resolution Buffer
- *
- * eBPF programs are strictly constrained by a 512-byte stack limit. To
- * securely resolve absolute paths (PATH_MAX = 4096) during rename operations,
- * we allocate a dedicated memory segment. We utilize BPF_MAP_TYPE_PERCPU_ARRAY
- * to provide a lock-free, zero-contention memory region dedicated to each CPU
- * core.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, __u32);
-    __type(value, char[PATH_MAX]);
-    __uint(max_entries, 1);
-} path_buffer_map SEC(".maps");
+BOUCLIER_PATH_BUFFER_MAP;
+BOUCLIER_PROTECTED_DIRS_MAP;
+BOUCLIER_MODULE_ALERTS;
+BOUCLIER_MODULE_STATE_MAP;
 
 /**
  * struct entropy_scratch - Entropy Calculation Workspace
@@ -87,41 +76,6 @@ struct {
     __type(value, struct entropy_scratch);
     __uint(max_entries, 1);
 } scratch_map SEC(".maps");
-
-/**
- * struct dir_id - Cross-Device Unique Directory Identifier
- * @ino: The physical inode number.
- * @dev: The filesystem device ID (Superblock).
- * @_pad: Explicit padding to ensure stable 16-byte alignment.
- */
-struct dir_id {
-    __u64 ino;
-    __u32 dev;
-    __u32 _pad;
-};
-
-/**
- * protected_dirs - Hardware-Backed Directory Watchlist
- *
- * Relies on the physical Inode (`ino`) and Superblock Device ID (`dev`) rather
- * than vulnerable string paths. This architecture completely neutralizes mount
- * namespace evasion and bind-mount spoofing techniques commonly employed by
- * advanced adversaries to bypass static path heuristics.
- *
- * We set `max_entries` to a safe 8,192 entries as a fallback baseline. The
- * actual capacity is dynamically calculated and overridden by the userland
- * daemon (via libbpf's split-phase loading) before kernel allocation occurs,
- * ensuring O(1) lookups without extreme memory waste.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct dir_id);
-    __type(value, __u8); // 1 = protected
-    __uint(max_entries, 8192);
-} protected_dirs SEC(".maps");
-
-BOUCLIER_MODULE_ALERTS;
-BOUCLIER_MODULE_STATE_MAP;
 
 /**
  * scaled_log2 - Pre-computed Logarithm Lookup Table
@@ -192,12 +146,10 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir, struct dent
      * the protected watchlist, the operation is subjected to entropy analysis.
      */
     struct dir_id old_id = {};
-    old_id.ino = BPF_CORE_READ(old_dir, dentry, d_inode, i_ino);
-    old_id.dev = BPF_CORE_READ(old_dir, dentry, d_sb, s_dev);
-
     struct dir_id new_id = {};
-    new_id.ino = BPF_CORE_READ(new_dir, dentry, d_inode, i_ino);
-    new_id.dev = BPF_CORE_READ(new_dir, dentry, d_sb, s_dev);
+
+	extract_dir_id_from_dentry(old_dir->dentry, &old_id);
+    extract_dir_id_from_dentry(new_dir->dentry, &new_id);
 
     __u8 *old_protected = bpf_map_lookup_elem(&protected_dirs, &old_id);
     __u8 *new_protected = bpf_map_lookup_elem(&protected_dirs, &new_id);
@@ -371,31 +323,12 @@ int BPF_PROG(rename_entropy_vfs_mkdir_exit, struct mnt_idmap *idmap, struct inod
     }
 
 	struct dir_id parent_id = {};
-    parent_id.ino = BPF_CORE_READ(dir, i_ino);
-    parent_id.dev = BPF_CORE_READ(dir, i_sb, s_dev);
+	struct dir_id child_id = {};
 
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &parent_id);
+	extract_dir_id_from_inode(dir, &parent_id);
+    extract_dir_id_from_dentry(dentry, &child_id);
 
-    // Inherit protection for the new child directory
-	if (is_protected && *is_protected == 1) {
-        struct dir_id child_id = {};
-        child_id.ino = BPF_CORE_READ(dentry, d_inode, i_ino);
-        child_id.dev = BPF_CORE_READ(dentry, d_sb, s_dev);
-        
-        __u8 val = 1;
-		int err = bpf_map_update_elem(&protected_dirs, &child_id, &val, BPF_ANY);
-        
-        /*
-         * BPF Map Exhaustion Handling
-         * eBPF maps cannot be dynamically resized post-allocation. If an
-		 * attacker triggers a loop to create thousands of directories, the map
-		 * will fill up, and `bpf_map_update_elem` will return -E2BIG. We
-		 * intercept this to log a critical failure.
-         */
-        if (err) {
-            bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted in rename_entropy! Fail-open state.\n");
-        }
-    }
+    inherit_protection(&protected_dirs, &parent_id, &child_id, "rename_entropy");
 
     return 0;
 }
@@ -417,19 +350,12 @@ int BPF_PROG(rename_entropy_vfs_rename_exit, struct renamedata *rd, int ret)
     }
 
     struct dir_id target_parent_id = {};
-    target_parent_id.ino = BPF_CORE_READ(rd, new_dir, i_ino);
-    target_parent_id.dev = BPF_CORE_READ(rd, new_dir, i_sb, s_dev);
+	struct dir_id moved_id = {};
 
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_dirs, &target_parent_id);
+	extract_dir_id_from_inode(BPF_CORE_READ(rd, new_dir), &target_parent_id);
+    extract_dir_id_from_dentry(BPF_CORE_READ(rd, old_dentry), &moved_id);
 
-    if (is_protected && *is_protected == 1) {
-        struct dir_id moved_id = {};
-        moved_id.ino = BPF_CORE_READ(rd, old_dentry, d_inode, i_ino);
-        moved_id.dev = BPF_CORE_READ(rd, old_dentry, d_sb, s_dev);
-        
-        __u8 val = 1;
-        bpf_map_update_elem(&protected_dirs, &moved_id, &val, BPF_ANY);
-    }
+    inherit_protection(&protected_dirs, &target_parent_id, &moved_id, "rename_entropy");
 
     return 0;
 }
