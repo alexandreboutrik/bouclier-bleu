@@ -63,7 +63,7 @@ struct dir_id {
  */
 #define BOUCLIER_PROTECTED_FILES_MAP \
 	struct { \
-    __uint(type, BPF_MAP_TYPE_LRU_HASH); \
+    __uint(type, BPF_MAP_TYPE_HASH); \
     __type(key, struct dir_id); \
     __type(value, __u8); \
     __uint(max_entries, 2); \

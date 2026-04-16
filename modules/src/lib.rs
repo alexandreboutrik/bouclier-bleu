@@ -19,9 +19,9 @@
 //! This module provides the `SecurityModule` contract and the IoC registry,
 //! decoupling specific defensive heuristics from the core eBPF routing engine.
 
-use std::sync::Arc;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
 
 pub mod exec_block;
 pub mod rename_entropy;
@@ -270,10 +270,10 @@ macro_rules! define_security_module {
 }
 
 /// Centralized Hardware Key Generator
-/// 
-/// Translates user-space filesystem metadata into the strict 16-byte 
-/// composite key (Inode + Kernel Device ID) required by the eBPF `dir_id` 
-/// C-struct. Centralizing this prevents bitwise math duplication and 
+///
+/// Translates user-space filesystem metadata into the strict 16-byte
+/// composite key (Inode + Kernel Device ID) required by the eBPF `dir_id`
+/// C-struct. Centralizing this prevents bitwise math duplication and
 /// ensures uniform padding alignment across all security modules.
 pub fn generate_hardware_key(metadata: &Metadata) -> [u8; 16] {
     let ino = metadata.ino();
@@ -281,7 +281,7 @@ pub fn generate_hardware_key(metadata: &Metadata) -> [u8; 16] {
 
     /*
      * User-to-Kernel dev_t Translation
-     * glibc uses a 64-bit encoded device ID. The kernel uses a 32-bit 
+     * glibc uses a 64-bit encoded device ID. The kernel uses a 32-bit
      * internal format ((major << 20) | minor). We must reconstruct it.
      */
     let major = ((user_dev & 0x00000000000fff00) >> 8) | ((user_dev & 0xfffff00000000000) >> 32);

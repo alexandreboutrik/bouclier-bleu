@@ -37,6 +37,16 @@ char LICENSE[] SEC("license") = "GPL";
 #define O_TRUNC  00001000
 #endif
 
+#ifndef S_IFMT
+#define S_IFMT  00170000
+#endif
+#ifndef S_IFREG
+#define S_IFREG  0100000
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#endif
+
 #define ACTION_FILE_TAMPER 1
 #define ACTION_BPF_TAMPER  2
 #define ACTION_SYSLOG_LEAK 3
@@ -85,6 +95,20 @@ int BPF_PROG(core_shield_file_open, struct file *file) {
         return 0; 
     }
 
+	/* UID Fast-Path 
+     * System daemons (root) are permitted to modify files. Returning early
+	 * here saves us from executing expensive BPF_CORE_READs and Map Lookups
+	 * for legitimate, high-frequency system I/O.
+     */
+    if ((__u32)bpf_get_current_uid_gid() == 0) {
+        return 0;
+    }
+
+	umode_t i_mode = BPF_CORE_READ(file, f_inode, i_mode);
+	if (!S_ISREG(i_mode)) {
+		return 0;
+	}
+
 	/*
      * Hardware Validation
      * Extract the composite hardware IDs directly from the target file's
@@ -96,32 +120,30 @@ int BPF_PROG(core_shield_file_open, struct file *file) {
 
     __u8 *is_protected = bpf_map_lookup_elem(&protected_files, &f_id);
     if (is_protected && *is_protected == 1) {
-        if ((__u32)bpf_get_current_uid_gid() != 0) {
             struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-            if (event) {
-				BPF_SAFE_MEMSET(event, sizeof(*event));
+        if (event) {
+			BPF_SAFE_MEMSET(event, sizeof(*event));
 
-                event->pid = bpf_get_current_pid_tgid() >> 32;
-                event->action_type = ACTION_FILE_TAMPER;
+            event->pid = bpf_get_current_pid_tgid() >> 32;
+            event->action_type = ACTION_FILE_TAMPER;
                 
-                /* Telemetry Fallback: Best-effort path resolution for the
-				 * alert log. If the path exceeds 4096 bytes (-ENAMETOOLONG),
-				 * we skip resolution but still block the event and send the
-				 * alert, eliminating the fail-open truncation vulnerability.
-                 */
-                __u32 key = 0;
-                char *path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
-                if (path_buf) {
-                    long len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
-                    if (len > 0 && len != -ENAMETOOLONG) {
-                        bpf_probe_read_kernel_str(event->target, PATH_MAX, path_buf);
-                    }
+            /* Telemetry Fallback: Best-effort path resolution for the
+			 * alert log. If the path exceeds 4096 bytes (-ENAMETOOLONG),
+			 * we skip resolution but still block the event and send the
+			 * alert, eliminating the fail-open truncation vulnerability.
+             */
+            __u32 key = 0;
+            char *path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
+            if (path_buf) {
+                long len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
+                if (len > 0 && len != -ENAMETOOLONG) {
+                    bpf_probe_read_kernel_str(event->target, PATH_MAX, path_buf);
                 }
-                bpf_ringbuf_submit(event, 0);
             }
-            bpf_printk("Bouclier Bleu [BLOCK]: Unauthorized modification of core EDR file.\n");
-            return -EACCES; // Fail-closed execution block
+            bpf_ringbuf_submit(event, 0);
         }
+        bpf_printk("Bouclier Bleu [BLOCK]: Unauthorized modification of core EDR file.\n");
+        return -EACCES; // Fail-closed execution block
     }
 
     return 0;
@@ -141,14 +163,7 @@ int BPF_PROG(core_shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) 
     if ((__u32)bpf_get_current_uid_gid() != 0) {
         struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
         if (event) {
-			/*
-             * BPF Verifier Standard Library Restrictions
-             * Guarantee memory initialization to prevent verifier rejection.
-             */
-			volatile __u8 *clear_ptr = (volatile __u8 *)event;
-            for (int i = 0; i < sizeof(*event); i++) {
-                clear_ptr[i] = 0;
-            }
+			BPF_SAFE_MEMSET(event, sizeof(*event));
 
             event->pid = bpf_get_current_pid_tgid() >> 32;
             event->action_type = ACTION_BPF_TAMPER;
@@ -180,14 +195,7 @@ int BPF_PROG(core_shield_syslog, int type) {
     if ((__u32)bpf_get_current_uid_gid() != 0) {
 		struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
         if (event) {
-            /*
-             * BPF Verifier Standard Library Restrictions
-             * Guarantee memory initialization to prevent verifier rejection.
-             */
-            volatile __u8 *clear_ptr = (volatile __u8 *)event;
-            for (int i = 0; i < sizeof(*event); i++) {
-                clear_ptr[i] = 0;
-            }
+			BPF_SAFE_MEMSET(event, sizeof(*event));
 
             event->pid = bpf_get_current_pid_tgid() >> 32;
             event->action_type = ACTION_SYSLOG_LEAK;

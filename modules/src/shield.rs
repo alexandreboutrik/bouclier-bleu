@@ -18,7 +18,7 @@ use crate::{BpfReader, define_security_module};
 
 /// Telemetry payload yielded by the `core_shield` BPF hooks.
 ///
-/// Captures unprivileged attempts to modify the EDR configuration, tamper 
+/// Captures unprivileged attempts to modify the EDR configuration, tamper
 /// with eBPF subsystem links, or read sensitive kernel ring buffer logs.
 #[derive(Debug)]
 pub struct ShieldAlert {
@@ -57,10 +57,10 @@ impl ShieldAlert {
 
 /*
  * Defense Heuristic : Self-Defense Shield
- * Hardens the Bouclier Bleu architecture against direct tampering and LPE 
- * (Local Privilege Escalation) primitives. It strictly enforces immutable 
- * access controls on critical configuration files via hardware invariants, 
- * blocks unprivileged bpf() syscalls to prevent EDR unloading, and locks 
+ * Hardens the Bouclier Bleu architecture against direct tampering and LPE
+ * (Local Privilege Escalation) primitives. It strictly enforces immutable
+ * access controls on critical configuration files via hardware invariants,
+ * blocks unprivileged bpf() syscalls to prevent EDR unloading, and locks
  * down dmesg to neutralize KASLR bypasses.
  */
 define_security_module!(
@@ -84,8 +84,8 @@ define_security_module!(
     capacities: || -> std::collections::HashMap<String, u32> {
         /*
          * Map Sizing Heuristic
-         * The shield module currently only protects a statically defined set 
-         * of core EDR files. We explicitly allocate exactly what is needed 
+         * The shield module currently only protects a statically defined set
+         * of core EDR files. We explicitly allocate exactly what is needed
          * to minimize the locked memory footprint in the kernel.
          */
         let mut caps = std::collections::HashMap::new();
@@ -94,17 +94,17 @@ define_security_module!(
     },
     init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
         let bpf_map = provider.get_map("protected_files")?;
-        
+
         let target_files = ["/etc/bouclier-bleu/config.toml", "/usr/bin/bouclier-bleu-core"];
         let is_protected: [u8; 1] = [1];
 
         /*
          * Hardware-backed File Watchlist Initialization
-         * Threat Model: Static string path matching is inherently vulnerable 
-         * to mount namespace evasion (`unshare -m`) and hardlink abuse. By 
-         * resolving the physical `inode` and `device ID` of our critical 
-         * files at boot, we establish an immutable tracking mechanism that 
-         * the kernel hook can validate regardless of how the file is named 
+         * Threat Model: Static string path matching is inherently vulnerable
+         * to mount namespace evasion (`unshare -m`) and hardlink abuse. By
+         * resolving the physical `inode` and `device ID` of our critical
+         * files at boot, we establish an immutable tracking mechanism that
+         * the kernel hook can validate regardless of how the file is named
          * or mapped in user-space.
          */
         for path in target_files {
