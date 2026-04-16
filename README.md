@@ -39,17 +39,21 @@ Each "defense capability" is implemented as a standalone module. A complete modu
 
 ### Current Modules (Features)
 
-The EDR currently has the following defense heuristics:
+The NGAV/EDR currently has the following defense heuristics:
 
 * **Ransomware Entropy Monitor (`rename_entropy`)** : Detects and neutralizes ransomware encryption phases in real-time. It intercepts `rename` operations (e.g., appending `.locked_xyz123`) and calculates Shannon entropy using a custom, pre-computed logarithm lookup table for O(1) integer-math execution within the eBPF virtual machine. 
 
 * **World-Writable Execution Block (`exec_block`)** : Mitigates memory corruption exploits and web-shell droppers from staging secondary payloads. It hooks into `bprm_check_security` to intercept process execution, blocking executions originating from historically insecure world-writable directories (e.g., `/tmp`, `/dev/shm`, `/var/crash`, `/run/user`).
 
+* **Self-Defense Shield (`shield`)** : Hardens the NGAV/EDR architecture against direct tampering and LPE primitives. It strictly enforces `O_RDONLY` on critical configuration files, restricts the `bpf()` syscall to prevent EDR unloading, and locks down `dmesg` reads to prevent unprivileged kernel info leaks and KASLR bypasses.
+
 `Bouclier Bleu` is actively being developed. Upcoming modules (TODO SOON) include:
 
-* **Strong W^X (`file_mprotect`):** Enforcing strict Write XOR Execute memory policies to mitigate shellcode injection and ROP (Return-Oriented Programming) chain staging.
+* **Strict Write XOR Execute (`strict_wx`)** : [OPT-IN] Mitigating shellcode injection and in-memory staging. It will check for a specific extended attribute (e.g. `user.bouclier.strict_wx`) on compiled binaries, mercilessly blocking any `mmap` or `mprotect` calls requesting `PROT_WRITE | PROT_EXEC` memory allocations.
 
 * **Process Injection Prevention (`ptrace_access_check` / `ptrace_traceme`):** Monitoring and restricting `ptrace` capabilities to block cross-process memory tampering, hollow process injection, and credential dumping.
+
+* **Removable Media Neutralizer (`mount_secure`)** : Stripping physical USB drops of their ability to execute binaries or escalate privileges. It will hook `lsm/sb_mount` to guarantee that any removable media mount operation strictly enforces `MS_NOEXEC`, `MS_NOSUID`, and `MS_NODEV` flags, acting as a fail-safe against unsafe sysadmin defaults.
 
 ## Compilation & Usage
 

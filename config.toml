@@ -5,3 +5,4 @@
 # Any module not listed here will be loaded but remain completely dormant 
 # (returning 0 in the kernel) until manually enabled via the CLI.
 exec_block = true
+shield = true
