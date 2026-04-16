@@ -39,6 +39,25 @@
     } state_map SEC(".maps");
 
 /**
+ * BPF_SAFE_MEMSET() - Verifier-Safe Memory Initialization
+ * @dest: Pointer to the struct/memory block.
+ * @size: Size of the memory block (usually sizeof(*ptr)).
+ *
+ * Clang's BPF backend cannot safely inline standard `memset` for large structs 
+ * (>512 bytes), resulting in forbidden external function calls or
+ * uninitialized memory rejections. This macro utilizes a volatile bounded loop
+ * to force memory zeroing while defeating Clang's auto-memset optimization
+ * passes.
+ */
+#define BPF_SAFE_MEMSET(dest, size) \
+    do { \
+        volatile __u8 *__ptr = (volatile __u8 *)(dest); \
+        for (int __i = 0; __i < (size); __i++) { \
+            __ptr[__i] = 0; \
+        } \
+    } while (0)
+
+/**
  * is_module_active() - Evaluates the enforcement state of the calling module.
  * @map: Pointer to the module's state_map.
  *

@@ -55,6 +55,21 @@ struct dir_id {
     } protected_dirs SEC(".maps");
 
 /**
+ * BOUCLIER_PROTECTED_FILES_MAP - Hardware-Backed File Watchlist
+ *
+ * Tracks the physical Inode and Superblock Device ID of critical EDR files.
+ * This completely neutralizes string-based path evasion techniques like 
+ * hardlink spoofing and mount namespace manipulation.
+ */
+#define BOUCLIER_PROTECTED_FILES_MAP \
+	struct { \
+    __uint(type, BPF_MAP_TYPE_LRU_HASH); \
+    __type(key, struct dir_id); \
+    __type(value, __u8); \
+    __uint(max_entries, 2); \
+} protected_files SEC(".maps");
+
+/**
  * extract_dir_id_from_dentry() - Safely resolves dir_id from a dentry
  * @dentry: Pointer to the dentry cache object.
  * @out_id: Pointer to the struct dir_id to populate.
