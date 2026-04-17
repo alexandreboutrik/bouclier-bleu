@@ -42,222 +42,229 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-    if [[ -n "${DAEMON_PID}" ]]; then
-        kill -9 "${DAEMON_PID}" 2>/dev/null || true
-    fi
-    rm -rf "${TEST_DIR_SENSITIVE}" "${TEST_DIR_UNMONITORED}" "${DAEMON_LOG}"
+	if [[ -n "${DAEMON_PID}" ]]; then
+		kill -9 "${DAEMON_PID}" 2>/dev/null || true
+	fi
+	rm -rf "${TEST_DIR_SENSITIVE}" "${TEST_DIR_UNMONITORED}" "${DAEMON_LOG}"
 }
 
 trap teardown EXIT
 
 function provision_env() {
-    mkdir -p "${TEST_DIR_SENSITIVE}" ||
-		{ echo "[-] Failed to create sensitive test dir."; exit 1; }
-    mkdir -p "${TEST_DIR_UNMONITORED}" ||
-		{ echo "[-] Failed to create unmonitored test dir."; exit 1; }
-    
-    for i in {1..8}; do
-        touch "${TEST_DIR_SENSITIVE}/base_file_${i}"
-    done
-    touch "${TEST_DIR_UNMONITORED}/base_file_1"
+	mkdir -p "${TEST_DIR_SENSITIVE}" ||
+		{
+			echo "[-] Failed to create sensitive test dir."
+			exit 1
+		}
+	mkdir -p "${TEST_DIR_UNMONITORED}" ||
+		{
+			echo "[-] Failed to create unmonitored test dir."
+			exit 1
+		}
+
+	for i in {1..8}; do
+		touch "${TEST_DIR_SENSITIVE}/base_file_${i}"
+	done
+	touch "${TEST_DIR_UNMONITORED}/base_file_1"
 }
 
 function initialize_daemon() {
-    echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-    
-    # Pre-emptively enable the module explicitly via CLI in case config.toml
+	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
+
+	# Pre-emptively enable the module explicitly via CLI in case config.toml
 	# doesn't have it yet
-    "${BB_CORE_BIN}" > "${DAEMON_LOG}" 2>&1 &
-    DAEMON_PID=$!
+	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
+	DAEMON_PID=$!
 
-    sleep 2
+	sleep 2
 
-    if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-        echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-        echo "--- Daemon Output ---"
-        cat "${DAEMON_LOG}"
-        echo "---------------------"
-        exit 1
-    fi
-    
-    echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-    
-    "${BB_CLI_BIN}" enable rename_entropy > /dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."; exit 1;
+	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
+		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
+		echo "--- Daemon Output ---"
+		cat "${DAEMON_LOG}"
+		echo "---------------------"
+		exit 1
+	fi
+
+	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
+
+	"${BB_CLI_BIN}" enable rename_entropy >/dev/null 2>&1 || {
+		echo "[-] Failed to enable the module."
+		exit 1
 	}
 }
 
 function verify_low_entropy_rename() {
-    echo "  [*] Validating Low-Entropy Rename (Expected: ALLOW)..."
-    
-    set +e
-    mv "${TEST_DIR_SENSITIVE}/base_file_1" "${TEST_DIR_SENSITIVE}/${LOW_ENTROPY_NAME}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Low-Entropy Rename (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Low entropy rename was blocked (Exit Code: ${exit_code}). False positive detected."
-        exit 1
-    fi
-    echo "  [+] Low-entropy rename successfully allowed."
+	set +e
+	mv "${TEST_DIR_SENSITIVE}/base_file_1" "${TEST_DIR_SENSITIVE}/${LOW_ENTROPY_NAME}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Low entropy rename was blocked (Exit Code: ${exit_code}). False positive detected."
+		exit 1
+	fi
+	echo "  [+] Low-entropy rename successfully allowed."
 }
 
 function verify_high_entropy_rename() {
-    echo "  [*] Validating High-Entropy Ransomware Rename (Expected: BLOCK/KILL)..."
-    
-    set +e
-    # Because standard 'mv' spawns a sub-process, the userland daemon will
+	echo "  [*] Validating High-Entropy Ransomware Rename (Expected: BLOCK/KILL)..."
+
+	set +e
+	# Because standard 'mv' spawns a sub-process, the userland daemon will
 	# SIGKILL this specific 'mv' instance without crashing our parent test
 	# script.
-    mv "${TEST_DIR_SENSITIVE}/base_file_2" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	mv "${TEST_DIR_SENSITIVE}/base_file_2" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
 
-    # Exit code 1 indicates standard -EPERM failure from the syscall.
-    # Exit code 137 indicates SIGKILL (128 + 9) from our userland daemon before
+	# Exit code 1 indicates standard -EPERM failure from the syscall.
+	# Exit code 137 indicates SIGKILL (128 + 9) from our userland daemon before
 	# mv could handle the EPERM.
-    if [[ "${exit_code}" -eq 0 ]]; then
-        echo "[-] Assertion failed: High-entropy rename was permitted! Evasion successful."
-        exit 1
-    fi
-    echo "  [+] High-entropy rename successfully vetoed/killed (Exit Code: ${exit_code})."
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: High-entropy rename was permitted! Evasion successful."
+		exit 1
+	fi
+	echo "  [+] High-entropy rename successfully vetoed/killed (Exit Code: ${exit_code})."
 }
 
 function verify_short_name_bypass() {
-    echo "  [*] Validating Short-Name Length Check (Expected: ALLOW)..."
-    
-    # 7 characters: highly random, but falls below the nlen < 8 threshold.
-    set +e
-    mv "${TEST_DIR_SENSITIVE}/base_file_3" "${TEST_DIR_SENSITIVE}/aB9xZ_Q" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Short-Name Length Check (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Short file name was incorrectly blocked."
-        exit 1
-    fi
-    echo "  [+] Short-name file successfully ignored by heuristics."
+	# 7 characters: highly random, but falls below the nlen < 8 threshold.
+	set +e
+	mv "${TEST_DIR_SENSITIVE}/base_file_3" "${TEST_DIR_SENSITIVE}/aB9xZ_Q" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Short file name was incorrectly blocked."
+		exit 1
+	fi
+	echo "  [+] Short-name file successfully ignored by heuristics."
 }
 
 function verify_extension_whitelist() {
-    echo "  [*] Validating Extension Whitelisting (Expected: ALLOW)..."
-    
-    # Target name has extremely high entropy, but ends in '.log'
-    set +e
-    mv "${TEST_DIR_SENSITIVE}/base_file_4" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}.log" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Extension Whitelisting (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Whitelisted extension (.log) was incorrectly blocked."
-        exit 1
-    fi
-    echo "  [+] High-entropy .log file successfully ignored by heuristics."
+	# Target name has extremely high entropy, but ends in '.log'
+	set +e
+	mv "${TEST_DIR_SENSITIVE}/base_file_4" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}.log" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Whitelisted extension (.log) was incorrectly blocked."
+		exit 1
+	fi
+	echo "  [+] High-entropy .log file successfully ignored by heuristics."
 }
 
 function verify_unmonitored_directory() {
-    echo "  [*] Validating Unmonitored Directory Filter (Expected: ALLOW)..."
-    
-    # Executing the exact same high-entropy string, but in /tmp/
-    set +e
-    mv "${TEST_DIR_UNMONITORED}/base_file_1" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Unmonitored Directory Filter (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Unmonitored directory (/tmp/) triggered heuristic!"
-        exit 1
-    fi
-    echo "  [+] Unmonitored directory successfully ignored by heuristics."
+	# Executing the exact same high-entropy string, but in /tmp/
+	set +e
+	mv "${TEST_DIR_UNMONITORED}/base_file_1" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Unmonitored directory (/tmp/) triggered heuristic!"
+		exit 1
+	fi
+	echo "  [+] Unmonitored directory successfully ignored by heuristics."
 }
 
 function verify_mount_namespace_evasion() {
-    echo "  [*] Validating Mount Namespace Evasion (Expected: BLOCK/KILL)..."
-    
-    local EVASION_DIR="/tmp/bb_evasion_test"
-    mkdir -p "${EVASION_DIR}"
-    
-    set +e
-    # -U: New user namespace, -r: Map to root, -m: New mount namespace
-    # Bind mount the sensitive directory into an unmonitored location and
+	echo "  [*] Validating Mount Namespace Evasion (Expected: BLOCK/KILL)..."
+
+	local EVASION_DIR="/tmp/bb_evasion_test"
+	mkdir -p "${EVASION_DIR}"
+
+	set +e
+	# -U: New user namespace, -r: Map to root, -m: New mount namespace
+	# Bind mount the sensitive directory into an unmonitored location and
 	# execute rename
-    unshare -Ur -m bash -c "
+	unshare -Ur -m bash -c "
         mount --bind '${TEST_DIR_SENSITIVE}' '${EVASION_DIR}'
         mv '${EVASION_DIR}/base_file_6' '${EVASION_DIR}/${HIGH_ENTROPY_NAME}_evaded' > /dev/null 2>&1
     "
-    local exit_code=$?
-    set -e
+	local exit_code=$?
+	set -e
 
-    if [[ "${exit_code}" -eq 0 ]]; then
-        echo "[-] Assertion failed: Mount namespace bind evasion was successful!"
-        exit 1
-    fi
-    echo "  [+] Mount namespace evasion successfully thwarted (Exit Code: ${exit_code})."
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Mount namespace bind evasion was successful!"
+		exit 1
+	fi
+	echo "  [+] Mount namespace evasion successfully thwarted (Exit Code: ${exit_code})."
 }
 
 function verify_cross_directory_evasion() {
-    echo "  [*] Validating Cross-Directory Evasion Prevention (Expected: BLOCK/KILL)..."
+	echo "  [*] Validating Cross-Directory Evasion Prevention (Expected: BLOCK/KILL)..."
 
-	# Let the EDR's 2-second sliding window expire so we don't accumulate 
-    # strikes against the test script.
-    sleep 2.1
-    
-    # ADVANCED THREAT: Moving a file FROM a protected directory (/var/...) 
-    # TO an unprotected directory (/tmp/...) with a high-entropy name.
-    # Before the fix, the eBPF hook only checked the destination, allowing evasion.
-    set +e
-    mv "${TEST_DIR_SENSITIVE}/base_file_7" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}_cross" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	# Let the EDR's 2-second sliding window expire so we don't accumulate
+	# strikes against the test script.
+	sleep 2.1
 
-    if [[ "${exit_code}" -eq 0 ]]; then
-        echo "[-] Assertion failed: Cross-directory staging evasion was permitted!"
-        exit 1
-    fi
-    echo "  [+] Cross-directory evasion successfully thwarted (Exit Code: ${exit_code})."
+	# ADVANCED THREAT: Moving a file FROM a protected directory (/var/...)
+	# TO an unprotected directory (/tmp/...) with a high-entropy name.
+	# Before the fix, the eBPF hook only checked the destination, allowing evasion.
+	set +e
+	mv "${TEST_DIR_SENSITIVE}/base_file_7" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}_cross" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Cross-directory staging evasion was permitted!"
+		exit 1
+	fi
+	echo "  [+] Cross-directory evasion successfully thwarted (Exit Code: ${exit_code})."
 }
 
 function verify_deep_path_handling() {
-    echo "  [*] Validating Deep Path (PATH_MAX) Boundary Handling (Expected: BLOCK/KILL)..."
+	echo "  [*] Validating Deep Path (PATH_MAX) Boundary Handling (Expected: BLOCK/KILL)..."
 
-	# Let the EDR's 2-second sliding window expire so we don't accumulate 
-    # strikes against the test script.
-    sleep 2.1
-    
-    # Create a deeply nested directory path that intentionally exceeds the old 
-    # 2048-byte limit but stays within the safe 4096 PATH_MAX boundary.
-    local deep_dir="${TEST_DIR_SENSITIVE}"
-    for i in {1..12}; do
-        # 200 characters per loop * 12 = ~2400 character path length
-        deep_dir="${deep_dir}/$(printf 'a%.0s' {1..200})"
-    done
-    
-    mkdir -p "${deep_dir}"
-    touch "${deep_dir}/base_file_deep"
+	# Let the EDR's 2-second sliding window expire so we don't accumulate
+	# strikes against the test script.
+	sleep 2.1
 
-    set +e
-    mv "${deep_dir}/base_file_deep" "${deep_dir}/${HIGH_ENTROPY_NAME}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	# Create a deeply nested directory path that intentionally exceeds the old
+	# 2048-byte limit but stays within the safe 4096 PATH_MAX boundary.
+	local deep_dir="${TEST_DIR_SENSITIVE}"
+	for i in {1..12}; do
+		# 200 characters per loop * 12 = ~2400 character path length
+		deep_dir="${deep_dir}/$(printf 'a%.0s' {1..200})"
+	done
 
-    if [[ "${exit_code}" -eq 0 ]]; then
-        echo "[-] Assertion failed: Deep path rename evasion was permitted!"
-        exit 1
-    fi
-    echo "  [+] Deep path safely processed without truncation EFAULTs."
+	mkdir -p "${deep_dir}"
+	touch "${deep_dir}/base_file_deep"
+
+	set +e
+	mv "${deep_dir}/base_file_deep" "${deep_dir}/${HIGH_ENTROPY_NAME}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Deep path rename evasion was permitted!"
+		exit 1
+	fi
+	echo "  [+] Deep path safely processed without truncation EFAULTs."
 }
 
 function verify_process_tree_eradication() {
-    echo "  [*] Validating Asynchronous Process Tree Eradication (Expected: KILL PPID & SIBLINGS)..."
+	echo "  [*] Validating Asynchronous Process Tree Eradication (Expected: KILL PPID & SIBLINGS)..."
 
-    # Provision target files for the 3 strikes
-    touch "${TEST_DIR_SENSITIVE}/strike_1"
-    touch "${TEST_DIR_SENSITIVE}/strike_2"
-    touch "${TEST_DIR_SENSITIVE}/strike_3"
+	# Provision target files for the 3 strikes
+	touch "${TEST_DIR_SENSITIVE}/strike_1"
+	touch "${TEST_DIR_SENSITIVE}/strike_2"
+	touch "${TEST_DIR_SENSITIVE}/strike_3"
 
-    # Build the mock orchestrator payload dynamically
-    local orchestrator="${TEST_DIR_SENSITIVE}/orchestrator.sh"
-    cat << EOF > "${orchestrator}"
+	# Build the mock orchestrator payload dynamically
+	local orchestrator="${TEST_DIR_SENSITIVE}/orchestrator.sh"
+	cat <<EOF >"${orchestrator}"
 #!/usr/bin/env bash
 # Spawn a long-running, benign sibling process (simulating legitimate background work)
 sleep 300 &
@@ -277,59 +284,60 @@ mv "${TEST_DIR_SENSITIVE}/strike_3" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_
 # Wait to be targeted by the Rust daemon's sysinfo eradication loop
 sleep 10
 EOF
-    chmod +x "${orchestrator}"
+	chmod +x "${orchestrator}"
 
-    # Execute the orchestrator in the background to act as the PPID
-    "${orchestrator}" &
-    local orchestrator_pid=$!
+	# Execute the orchestrator in the background to act as the PPID
+	"${orchestrator}" &
+	local orchestrator_pid=$!
 
-    # Allow a generous 2 seconds for the Rust daemon to aggregate the strikes 
-    # and execute the userland remediation sweep.
-    sleep 2
+	# Allow a generous 2 seconds for the Rust daemon to aggregate the strikes
+	# and execute the userland remediation sweep.
+	sleep 2
 
-    # Assert Orchestrator Decapitation
-    if kill -0 "${orchestrator_pid}" 2>/dev/null; then
-        echo "[-] Assertion failed: Orchestrator PPID (${orchestrator_pid}) survived 3 strikes!"
-        kill -9 "${orchestrator_pid}" 2>/dev/null || true
-        exit 1
-    fi
+	# Assert Orchestrator Decapitation
+	if kill -0 "${orchestrator_pid}" 2>/dev/null; then
+		echo "[-] Assertion failed: Orchestrator PPID (${orchestrator_pid}) survived 3 strikes!"
+		kill -9 "${orchestrator_pid}" 2>/dev/null || true
+		exit 1
+	fi
 
-    # Assert Sibling Eradication (Collateral cleanup)
-    if [[ -f /tmp/bb_benign_sibling.pid ]]; then
-        local sibling_pid=$(cat /tmp/bb_benign_sibling.pid)
-        if kill -0 "${sibling_pid}" 2>/dev/null; then
-            echo "[-] Assertion failed: Benign sibling (${sibling_pid}) was not eradicated!"
-            kill -9 "${sibling_pid}" 2>/dev/null || true
-            exit 1
-        fi
-    else
-        echo "[-] Test infrastructure failure: Sibling PID not recorded."
-        exit 1
-    fi
+	# Assert Sibling Eradication (Collateral cleanup)
+	if [[ -f /tmp/bb_benign_sibling.pid ]]; then
+		local sibling_pid=$(cat /tmp/bb_benign_sibling.pid)
+		if kill -0 "${sibling_pid}" 2>/dev/null; then
+			echo "[-] Assertion failed: Benign sibling (${sibling_pid}) was not eradicated!"
+			kill -9 "${sibling_pid}" 2>/dev/null || true
+			exit 1
+		fi
+	else
+		echo "[-] Test infrastructure failure: Sibling PID not recorded."
+		exit 1
+	fi
 
-    echo "  [+] Orchestrator and entire process tree successfully eradicated."
+	echo "  [+] Orchestrator and entire process tree successfully eradicated."
 }
 
 function verify_ipc_detachment() {
-    echo "  [*] Validating dynamic LSM hook detachment..."
-    
-    "${BB_CLI_BIN}" disable rename_entropy > /dev/null || {
-        echo "[-] RPC invocation failed."; exit 1;
-    }
+	echo "  [*] Validating dynamic LSM hook detachment..."
 
-    # Now that it's disabled, the high-entropy rename should succeed in the
+	"${BB_CLI_BIN}" disable rename_entropy >/dev/null || {
+		echo "[-] RPC invocation failed."
+		exit 1
+	}
+
+	# Now that it's disabled, the high-entropy rename should succeed in the
 	# sensitive directory
-    set +e
-    mv "${TEST_DIR_SENSITIVE}/base_file_5" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_disabled" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	set +e
+	mv "${TEST_DIR_SENSITIVE}/base_file_5" "${TEST_DIR_SENSITIVE}/${HIGH_ENTROPY_NAME}_disabled" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Disabled module still blocked the rename operation."
-        exit 1
-    fi
-    
-    echo "  [+] Hook cleanly detached. Execution allowed."
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Disabled module still blocked the rename operation."
+		exit 1
+	fi
+
+	echo "  [+] Hook cleanly detached. Execution allowed."
 }
 
 # ==========================================

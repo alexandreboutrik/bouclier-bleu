@@ -8,6 +8,7 @@ pkgs.mkShell {
     cargo
     rustc
     rustfmt
+	shfmt
     clippy
     #rust-analyzer
 

@@ -49,32 +49,32 @@ TARBALL_SHA=""
 # ==========================================
 # COMMAND LINE ARGUMENT PARSING
 # ==========================================
-while [ $# -ne 0 ] ; do
-    case "${1}" in
-    "-help") ;& "-h") ;& "help")
-        BB_HELP=1
-        ;;
-    "-version") ;& "-v")
-        BB_VERSION="${2}"
-        shift
-        ;;
-    "-deb")
-        BB_BUILD_DEB=1
-        ;;
-    "-rpm")
-        BB_BUILD_RPM=1
-        ;;
-    "-gh")
-        BB_CREATE_GH_RELEASE=1
-        ;;
-    "-aur")
-        BB_UPDATE_AUR=1
-        ;;
-    "-gentoo")
-        BB_UPDATE_GENTOO=1
-        ;;
-    esac
-    shift
+while [ $# -ne 0 ]; do
+	case "${1}" in
+	"-help") ;& "-h") ;& "help")
+		BB_HELP=1
+		;;
+	"-version") ;& "-v")
+		BB_VERSION="${2}"
+		shift
+		;;
+	"-deb")
+		BB_BUILD_DEB=1
+		;;
+	"-rpm")
+		BB_BUILD_RPM=1
+		;;
+	"-gh")
+		BB_CREATE_GH_RELEASE=1
+		;;
+	"-aur")
+		BB_UPDATE_AUR=1
+		;;
+	"-gentoo")
+		BB_UPDATE_GENTOO=1
+		;;
+	esac
+	shift
 done
 
 # ==========================================
@@ -82,119 +82,143 @@ done
 # ==========================================
 
 function print_help() {
-    if [ "${BB_HELP}" != "1" ] ; then return ; fi
+	if [ "${BB_HELP}" != "1" ]; then return; fi
 
-    echo "USAGE:"
-    echo "  ./scripts/release.sh -v [VERSION] [OPTIONS]"
-    echo
-    echo "OPTIONS:"
-    echo "  -help, -h               Display this help message and exit."
-    echo "  -version, -v            Specify the release version (e.g., 1.0.4)."
-    echo
-    echo "  -deb                    Build the Ubuntu/Debian .deb package."
-    echo "  -rpm                    Build the Fedora .rpm package."
-    echo "  -gh                     Tag and create the GitHub Release."
-    echo "  -aur                    Update the Arch AUR repository."
-    echo "  -gentoo                 Update the Gentoo overlay."
-    echo
-    echo "EXAMPLES:"
-    echo "  $ ./scripts/release.sh -v 1.0.4"
-    echo "  $ ./scripts/release.sh -v 1.0.4 -deb -rpm"
-    exit 0
+	echo "USAGE:"
+	echo "  ./scripts/release.sh -v [VERSION] [OPTIONS]"
+	echo
+	echo "OPTIONS:"
+	echo "  -help, -h               Display this help message and exit."
+	echo "  -version, -v            Specify the release version (e.g., 1.0.4)."
+	echo
+	echo "  -deb                    Build the Ubuntu/Debian .deb package."
+	echo "  -rpm                    Build the Fedora .rpm package."
+	echo "  -gh                     Tag and create the GitHub Release."
+	echo "  -aur                    Update the Arch AUR repository."
+	echo "  -gentoo                 Update the Gentoo overlay."
+	echo
+	echo "EXAMPLES:"
+	echo "  $ ./scripts/release.sh -v 1.0.4"
+	echo "  $ ./scripts/release.sh -v 1.0.4 -deb -rpm"
+	exit 0
 }
 
 function init_env() {
-    if [ -z "${BB_VERSION}" ] ; then
-        echo "Error: Version not specified. Use -v <version>. Exiting."
+	if [ -z "${BB_VERSION}" ]; then
+		echo "Error: Version not specified. Use -v <version>. Exiting."
 		echo
 		BB_HELP=1 print_help
-        exit 1
-    fi
-
-    TARBALL_URL="https://github.com/${REPO_OWNER}/${APP_NAME}/archive/refs/tags/v${BB_VERSION}.tar.gz"
-
-    echo "Starting release process for ${APP_NAME} v${BB_VERSION}..."
-    echo "Cleaning previous builds..."
-
-	if [ -d "${DIST_DIR}" ] ; then
-    	sudo rm -rf "${DIST_DIR}" ||
-			{ echo "Failed to remove old dist directory. Exiting." ; exit 1 ; }
+		exit 1
 	fi
 
-    mkdir -p "${DIST_DIR}" ||
-		{ echo "Failed to create dist directory. Exiting." ; exit 1 ; }
+	TARBALL_URL="https://github.com/${REPO_OWNER}/${APP_NAME}/archive/refs/tags/v${BB_VERSION}.tar.gz"
+
+	echo "Starting release process for ${APP_NAME} v${BB_VERSION}..."
+	echo "Cleaning previous builds..."
+
+	if [ -d "${DIST_DIR}" ]; then
+		sudo rm -rf "${DIST_DIR}" ||
+			{
+				echo "Failed to remove old dist directory. Exiting."
+				exit 1
+			}
+	fi
+
+	mkdir -p "${DIST_DIR}" ||
+		{
+			echo "Failed to create dist directory. Exiting."
+			exit 1
+		}
 }
 
 function prepare_cargo_release() {
-    if [ "${BB_HELP}" == "1" ] ; then return ; fi
+	if [ "${BB_HELP}" == "1" ]; then return; fi
 
-    echo -e "\n➤ Checking versions in Cargo.toml files and README.md..."
+	echo -e "\n➤ Checking versions in Cargo.toml files and README.md..."
 
-    local CARGO_FILES=(
-        "Cargo.toml"
-        "core/Cargo.toml"
-        "modules/Cargo.toml"
-        "cli/Cargo.toml"
-        "xtask/Cargo.toml"
-    )
+	local CARGO_FILES=(
+		"Cargo.toml"
+		"core/Cargo.toml"
+		"modules/Cargo.toml"
+		"cli/Cargo.toml"
+		"xtask/Cargo.toml"
+	)
 
-    local CHANGES_MADE=0
+	local CHANGES_MADE=0
 
-    for file in "${CARGO_FILES[@]}"; do
-        if [ -f "${file}" ]; then
-            # Check if the file already has the correct version
-            if grep -q "^version = \"${BB_VERSION}\"" "${file}"; then
-                echo "  ${file} is already at v${BB_VERSION}, skipping..."
-            else
-                # Matches 'version = "..."' at the start of a line
-                sed -i "s/^version = \".*\"/version = \"${BB_VERSION}\"/" "${file}" || 
-                    { echo "Failed to update version in ${file}. Exiting." ; exit 1 ; }
-                echo "  Updated ${file} to v${BB_VERSION}"
-                CHANGES_MADE=1
-            fi
-        else
-            echo "  Warning: ${file} not found, skipping..."
-        fi
-    done
+	for file in "${CARGO_FILES[@]}"; do
+		if [ -f "${file}" ]; then
+			# Check if the file already has the correct version
+			if grep -q "^version = \"${BB_VERSION}\"" "${file}"; then
+				echo "  ${file} is already at v${BB_VERSION}, skipping..."
+			else
+				# Matches 'version = "..."' at the start of a line
+				sed -i "s/^version = \".*\"/version = \"${BB_VERSION}\"/" "${file}" ||
+					{
+						echo "Failed to update version in ${file}. Exiting."
+						exit 1
+					}
+				echo "  Updated ${file} to v${BB_VERSION}"
+				CHANGES_MADE=1
+			fi
+		else
+			echo "  Warning: ${file} not found, skipping..."
+		fi
+	done
 
-    if [ -f "README.md" ]; then
-        if grep -q "badge/version-v${BB_VERSION}--alpha-blue" README.md; then
-            echo "  README.md is already at v${BB_VERSION}, skipping..."
-        else
-            sed -i "s/badge\/version-v.*--alpha-blue/badge\/version-v${BB_VERSION}--alpha-blue/" README.md || 
-                { echo "Failed to update version in README.md. Exiting." ; exit 1 ; }
-            echo "  Updated README.md to v${BB_VERSION}"
-            CHANGES_MADE=1
-        fi
-    else
-        echo "  Warning: README.md not found, skipping..."
-    fi
+	if [ -f "README.md" ]; then
+		if grep -q "badge/version-v${BB_VERSION}--alpha-blue" README.md; then
+			echo "  README.md is already at v${BB_VERSION}, skipping..."
+		else
+			sed -i "s/badge\/version-v.*--alpha-blue/badge\/version-v${BB_VERSION}--alpha-blue/" README.md ||
+				{
+					echo "Failed to update version in README.md. Exiting."
+					exit 1
+				}
+			echo "  Updated README.md to v${BB_VERSION}"
+			CHANGES_MADE=1
+		fi
+	else
+		echo "  Warning: README.md not found, skipping..."
+	fi
 
-    if [ "${CHANGES_MADE}" -eq 1 ]; then
-        echo -e "\n➤ Updating Cargo.lock dependencies..."
-        cargo update || 
-            { echo "Failed to run 'cargo update'. Make sure cargo is installed on the host. Exiting." ; exit 1 ; }
+	if [ "${CHANGES_MADE}" -eq 1 ]; then
+		echo -e "\n➤ Updating Cargo.lock dependencies..."
+		cargo update ||
+			{
+				echo "Failed to run 'cargo update'. Make sure cargo is installed on the host. Exiting."
+				exit 1
+			}
 
-        echo -e "\n➤ Committing release preparation..."
-        git add "${CARGO_FILES[@]}" README.md Cargo.lock || 
-            { echo "Failed to stage release files. Exiting." ; exit 1 ; }
-        
-        git commit -m "chore(release): prepare v${BB_VERSION}" || 
-            { echo "Failed to create release commit. Exiting." ; exit 1 ; }
+		echo -e "\n➤ Committing release preparation..."
+		git add "${CARGO_FILES[@]}" README.md Cargo.lock ||
+			{
+				echo "Failed to stage release files. Exiting."
+				exit 1
+			}
+
+		git commit -m "chore(release): prepare v${BB_VERSION}" ||
+			{
+				echo "Failed to create release commit. Exiting."
+				exit 1
+			}
 
 		git push origin main ||
-			{ echo "Failed to push. Exiting." ; exit 1 ; }
-    else
-        echo -e "\n➤ All files are already up to date. Skipping cargo update and git commit."
-    fi
+			{
+				echo "Failed to push. Exiting."
+				exit 1
+			}
+	else
+		echo -e "\n➤ All files are already up to date. Skipping cargo update and git commit."
+	fi
 }
 
 function build_deb() {
-    if [ "${BB_BUILD_DEB}" != "1" ] ; then return ; fi
+	if [ "${BB_BUILD_DEB}" != "1" ]; then return; fi
 
-    echo -e "\n➤ Building .deb package via Ubuntu Docker..."
+	echo -e "\n➤ Building .deb package via Ubuntu Docker..."
 
-    docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:24.04 bash -c "
+	docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:24.04 bash -c "
         set -e
         apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
             curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems linux-tools-common linux-tools-generic || exit 1
@@ -218,15 +242,18 @@ function build_deb() {
         mv *.deb /app/dist/ || exit 1
         
         chown -R ${HOST_UID}:${HOST_GID} /app/target/ubuntu /app/dist || exit 1
-    " || { echo "Failed to build .deb package in Docker. Exiting." ; exit 1 ; }
+    " || {
+		echo "Failed to build .deb package in Docker. Exiting."
+		exit 1
+	}
 }
 
 function build_rpm() {
-    if [ "${BB_BUILD_RPM}" != "1" ] ; then return ; fi
+	if [ "${BB_BUILD_RPM}" != "1" ]; then return; fi
 
-    echo -e "\n➤ Building .rpm package via Fedora Docker..."
+	echo -e "\n➤ Building .rpm package via Fedora Docker..."
 
-    docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/fedora fedora:40 bash -c "
+	docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/fedora fedora:40 bash -c "
         set -e
         dnf install -y curl make gcc clang llvm elfutils-libelf-devel zlib-devel pkg-config ruby ruby-devel rpm-build bpftool || exit 1
         
@@ -247,119 +274,176 @@ function build_rpm() {
         mv *.rpm /app/dist/ || exit 1
 
         chown -R ${HOST_UID}:${HOST_GID} /app/target/fedora /app/dist || exit 1
-    " || { echo "Failed to build .rpm package in Docker. Exiting." ; exit 1 ; }
+    " || {
+		echo "Failed to build .rpm package in Docker. Exiting."
+		exit 1
+	}
 }
 
 function create_github_release() {
-    if [ "${BB_CREATE_GH_RELEASE}" != "1" ] ; then return ; fi
+	if [ "${BB_CREATE_GH_RELEASE}" != "1" ]; then return; fi
 
-    echo -e "\n➤ Tagging and creating GitHub Release..."
+	echo -e "\n➤ Tagging and creating GitHub Release..."
 
-    git tag "v${BB_VERSION}" ||
-		{ echo "Failed to create git tag locally. Exiting." ; exit 1 ; }
-    git push origin "v${BB_VERSION}" ||
-		{ echo "Failed to push git tag to origin. Exiting." ; exit 1 ; }
+	git tag "v${BB_VERSION}" ||
+		{
+			echo "Failed to create git tag locally. Exiting."
+			exit 1
+		}
+	git push origin "v${BB_VERSION}" ||
+		{
+			echo "Failed to push git tag to origin. Exiting."
+			exit 1
+		}
 
-    gh release create "v${BB_VERSION}" "${DIST_DIR}"/* \
-        --title "Release v${BB_VERSION}" \
-        --generate-notes ||
-	{ echo "Failed to create GitHub release via gh CLI. Exiting." ; exit 1 ; }
+	gh release create "v${BB_VERSION}" "${DIST_DIR}"/* \
+		--title "Release v${BB_VERSION}" \
+		--generate-notes ||
+		{
+			echo "Failed to create GitHub release via gh CLI. Exiting."
+			exit 1
+		}
 }
 
 function calculate_sha() {
-    # We need the SHA for AUR and Gentoo
-    if [ "${BB_UPDATE_AUR}" != "1" ] && [ "${BB_UPDATE_GENTOO}" != "1" ] ; then return ; fi
-    
-    echo -e "\n➤ Downloading source tarball to calculate SHA256 checksum..."
-    sleep 3 # Give GitHub a moment to generate the tarball
-    
-    curl -sL "${TARBALL_URL}" -o "/tmp/${APP_NAME}.tar.gz" ||
-		{ echo "Failed to download source tarball. Exiting." ; exit 1 ; }
-    TARBALL_SHA=$(sha256sum "/tmp/${APP_NAME}.tar.gz" | awk '{ print $1 }') ||
-		{ echo "Failed to calculate SHA256. Exiting." ; exit 1 ; }
-    
-    if [ -z "${TARBALL_SHA}" ] ; then
-        echo "Error: Computed SHA256 is empty. Exiting."
-        exit 1
-    fi
-    
-    echo "SHA256: ${TARBALL_SHA}"
+	# We need the SHA for AUR and Gentoo
+	if [ "${BB_UPDATE_AUR}" != "1" ] && [ "${BB_UPDATE_GENTOO}" != "1" ]; then return; fi
+
+	echo -e "\n➤ Downloading source tarball to calculate SHA256 checksum..."
+	sleep 3 # Give GitHub a moment to generate the tarball
+
+	curl -sL "${TARBALL_URL}" -o "/tmp/${APP_NAME}.tar.gz" ||
+		{
+			echo "Failed to download source tarball. Exiting."
+			exit 1
+		}
+	TARBALL_SHA=$(sha256sum "/tmp/${APP_NAME}.tar.gz" | awk '{ print $1 }') ||
+		{
+			echo "Failed to calculate SHA256. Exiting."
+			exit 1
+		}
+
+	if [ -z "${TARBALL_SHA}" ]; then
+		echo "Error: Computed SHA256 is empty. Exiting."
+		exit 1
+	fi
+
+	echo "SHA256: ${TARBALL_SHA}"
 }
 
 function update_aur() {
-    if [ "${BB_UPDATE_AUR}" != "1" ] ; then return ; fi
+	if [ "${BB_UPDATE_AUR}" != "1" ]; then return; fi
 
-    echo -e "\n➤ Updating Arch AUR repository via Docker..."
+	echo -e "\n➤ Updating Arch AUR repository via Docker..."
 
-    if [ ! -d "${AUR_REPO_PATH}" ] ; then
-        echo "Error: AUR directory ${AUR_REPO_PATH} not found. Exiting."
-        exit 1
-    fi
+	if [ ! -d "${AUR_REPO_PATH}" ]; then
+		echo "Error: AUR directory ${AUR_REPO_PATH} not found. Exiting."
+		exit 1
+	fi
 
-    pushd "${AUR_REPO_PATH}" > /dev/null ||
-		{ echo "Failed to enter AUR directory. Exiting." ; exit 1 ; }
+	pushd "${AUR_REPO_PATH}" >/dev/null ||
+		{
+			echo "Failed to enter AUR directory. Exiting."
+			exit 1
+		}
 
-    sed -i "s/^pkgver=.*/pkgver=${BB_VERSION}/" PKGBUILD ||
-		{ echo "Failed to update pkgver in PKGBUILD. Exiting." ; exit 1 ; }
-    sed -i "s/^sha256sums=.*/sha256sums=('${TARBALL_SHA}')/" PKGBUILD ||
-		{ echo "Failed to update sha256sums in PKGBUILD. Exiting." ; exit 1 ; }
+	sed -i "s/^pkgver=.*/pkgver=${BB_VERSION}/" PKGBUILD ||
+		{
+			echo "Failed to update pkgver in PKGBUILD. Exiting."
+			exit 1
+		}
+	sed -i "s/^sha256sums=.*/sha256sums=('${TARBALL_SHA}')/" PKGBUILD ||
+		{
+			echo "Failed to update sha256sums in PKGBUILD. Exiting."
+			exit 1
+		}
 
-    docker run --rm -v "$(pwd):/aur" archlinux:base-devel bash -c "
+	docker run --rm -v "$(pwd):/aur" archlinux:base-devel bash -c "
         set -e
         useradd -m builder || exit 1
         chown -R builder:builder /aur || exit 1
         sudo -u builder bash -c 'cd /aur && makepkg --printsrcinfo > .SRCINFO' || exit 1
         chown -R ${HOST_UID}:${HOST_GID} /aur || exit 1
-    " || { echo "Failed to generate .SRCINFO via Docker. Exiting." ; exit 1 ; }
+    " || {
+		echo "Failed to generate .SRCINFO via Docker. Exiting."
+		exit 1
+	}
 
-    git add PKGBUILD .SRCINFO ||
-		{ echo "Failed to git add AUR files. Exiting." ; exit 1 ; }
-    git commit -m "Bump to v${BB_VERSION}" ||
-		{ echo "Failed to git commit AUR update. Exiting." ; exit 1 ; }
-    git push origin main ||
-		{ echo "Failed to push to AUR remote. Exiting." ; exit 1 ; }
+	git add PKGBUILD .SRCINFO ||
+		{
+			echo "Failed to git add AUR files. Exiting."
+			exit 1
+		}
+	git commit -m "Bump to v${BB_VERSION}" ||
+		{
+			echo "Failed to git commit AUR update. Exiting."
+			exit 1
+		}
+	git push origin main ||
+		{
+			echo "Failed to push to AUR remote. Exiting."
+			exit 1
+		}
 
-    popd > /dev/null || exit 1
+	popd >/dev/null || exit 1
 }
 
 function update_gentoo() {
-    if [ "${BB_UPDATE_GENTOO}" != "1" ] ; then return ; fi
+	if [ "${BB_UPDATE_GENTOO}" != "1" ]; then return; fi
 
-    echo -e "\n➤ Updating Gentoo Overlay via Docker..."
+	echo -e "\n➤ Updating Gentoo Overlay via Docker..."
 
-    if [ ! -d "${GENTOO_REPO_PATH}" ] ; then
-        echo "Error: Gentoo directory ${GENTOO_REPO_PATH} not found. Exiting."
-        exit 1
-    fi
+	if [ ! -d "${GENTOO_REPO_PATH}" ]; then
+		echo "Error: Gentoo directory ${GENTOO_REPO_PATH} not found. Exiting."
+		exit 1
+	fi
 
-    pushd "${GENTOO_REPO_PATH}" > /dev/null ||
-		{ echo "Failed to enter Gentoo directory. Exiting." ; exit 1 ; }
+	pushd "${GENTOO_REPO_PATH}" >/dev/null ||
+		{
+			echo "Failed to enter Gentoo directory. Exiting."
+			exit 1
+		}
 
-    OLD_EBUILD=$(ls * | grep \.ebuild | head -n 1)
-    if [ -z "${OLD_EBUILD}" ]; then
-        echo "Error: Could not find old ebuild file to rename. Exiting."
-        exit 1
-    fi
+	OLD_EBUILD=$(ls * | grep \.ebuild | head -n 1)
+	if [ -z "${OLD_EBUILD}" ]; then
+		echo "Error: Could not find old ebuild file to rename. Exiting."
+		exit 1
+	fi
 
-    mv "${OLD_EBUILD}" "${APP_NAME}-${BB_VERSION}.ebuild" ||
-		{ echo "Failed to rename ebuild file. Exiting." ; exit 1 ; }
+	mv "${OLD_EBUILD}" "${APP_NAME}-${BB_VERSION}.ebuild" ||
+		{
+			echo "Failed to rename ebuild file. Exiting."
+			exit 1
+		}
 
-    docker run --rm -v "$(pwd):/overlay" gentoo/stage3 bash -c "
+	docker run --rm -v "$(pwd):/overlay" gentoo/stage3 bash -c "
         set -e
         cd /overlay || exit 1
         wget ${TARBALL_URL} -O /var/cache/distfiles/${APP_NAME}-${BB_VERSION}.tar.gz || true
         ebuild ${APP_NAME}-${BB_VERSION}.ebuild manifest || exit 1
         chown -R ${HOST_UID}:${HOST_GID} /overlay || exit 1
-    " || { echo "Failed to generate Gentoo manifest via Docker. Exiting." ; exit 1 ; }
+    " || {
+		echo "Failed to generate Gentoo manifest via Docker. Exiting."
+		exit 1
+	}
 
-    git add . ||
-		{ echo "Failed to git add Gentoo files. Exiting." ; exit 1 ; }
-    git commit -m "${APP_NAME}: Bump to v${BB_VERSION}" ||
-		{ echo "Failed to git commit Gentoo update. Exiting." ; exit 1 ; }
-    git push origin main ||
-		{ echo "Failed to push to Gentoo remote. Exiting." ; exit 1 ; }
+	git add . ||
+		{
+			echo "Failed to git add Gentoo files. Exiting."
+			exit 1
+		}
+	git commit -m "${APP_NAME}: Bump to v${BB_VERSION}" ||
+		{
+			echo "Failed to git commit Gentoo update. Exiting."
+			exit 1
+		}
+	git push origin main ||
+		{
+			echo "Failed to push to Gentoo remote. Exiting."
+			exit 1
+		}
 
-    popd > /dev/null || exit 1
+	popd >/dev/null || exit 1
 }
 
 # ==========================================

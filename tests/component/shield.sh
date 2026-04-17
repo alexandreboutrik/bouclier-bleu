@@ -41,40 +41,49 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-    if [[ -n "${DAEMON_PID}" ]]; then
-        kill -9 "${DAEMON_PID}" 2>/dev/null || true
-    fi
-    rm -f "${CONFIG_TARGET}" "${BINARY_TARGET}" "${SHIELD_TESTER}" "${SYMLINK_TARGET}" "${DAEMON_LOG}"
-    userdel -r "${TEST_USER}" 2>/dev/null || true
+	if [[ -n "${DAEMON_PID}" ]]; then
+		kill -9 "${DAEMON_PID}" 2>/dev/null || true
+	fi
+	rm -f "${CONFIG_TARGET}" "${BINARY_TARGET}" "${SHIELD_TESTER}" "${SYMLINK_TARGET}" "${DAEMON_LOG}"
+	userdel -r "${TEST_USER}" 2>/dev/null || true
 }
 
 trap teardown EXIT
 
 function provision_env() {
-    echo "  [*] Provisioning Test Environment..."
+	echo "  [*] Provisioning Test Environment..."
 
-    # Create unprivileged test user
-    useradd -m -s /bin/bash "${TEST_USER}" ||
-        { echo "[-] Failed to create unprivileged test user."; exit 1; }
+	# Create unprivileged test user
+	useradd -m -s /bin/bash "${TEST_USER}" ||
+		{
+			echo "[-] Failed to create unprivileged test user."
+			exit 1
+		}
 
-    # Provision protected target files
-    mkdir -p "$(dirname "${CONFIG_TARGET}")"
-    touch "${CONFIG_TARGET}" || { echo "[-] Failed to create config target."; exit 1; }
-    touch "${BINARY_TARGET}" || { echo "[-] Failed to create binary target."; exit 1; }
-    
-    # Intentionally misconfigure the DAC permissions (chmod 777). 
-    # This proves the eBPF hook acts as a Mandatory Access Control (MAC) 
-    # fail-safe, overriding broken system permissions.
-    chmod 777 "${CONFIG_TARGET}"
-    chmod 777 "${BINARY_TARGET}"
+	# Provision protected target files
+	mkdir -p "$(dirname "${CONFIG_TARGET}")"
+	touch "${CONFIG_TARGET}" || {
+		echo "[-] Failed to create config target."
+		exit 1
+	}
+	touch "${BINARY_TARGET}" || {
+		echo "[-] Failed to create binary target."
+		exit 1
+	}
 
-    # Setup symlink evasion vector
-    ln -sf "${CONFIG_TARGET}" "${SYMLINK_TARGET}"
+	# Intentionally misconfigure the DAC permissions (chmod 777).
+	# This proves the eBPF hook acts as a Mandatory Access Control (MAC)
+	# fail-safe, overriding broken system permissions.
+	chmod 777 "${CONFIG_TARGET}"
+	chmod 777 "${BINARY_TARGET}"
 
-    # Compile inline C utility to invoke raw kernel syscalls and assert
+	# Setup symlink evasion vector
+	ln -sf "${CONFIG_TARGET}" "${SYMLINK_TARGET}"
+
+	# Compile inline C utility to invoke raw kernel syscalls and assert
 	# explicit EPERM returns, bypassing bash's generic permission abstractions.
-    local tester_c="${SHIELD_TESTER}.c"
-    cat << 'EOF' > "${tester_c}"
+	local tester_c="${SHIELD_TESTER}.c"
+	cat <<'EOF' >"${tester_c}"
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,160 +115,165 @@ int main(int argc, char *argv[]) {
 }
 EOF
 
-    cc -o "${SHIELD_TESTER}" "${tester_c}" ||
-        { echo "[-] Failed to compile raw syscall tester."; exit 1; }
-    rm -f "${tester_c}"
+	cc -o "${SHIELD_TESTER}" "${tester_c}" ||
+		{
+			echo "[-] Failed to compile raw syscall tester."
+			exit 1
+		}
+	rm -f "${tester_c}"
 }
 
 function initialize_daemon() {
-    echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-    
-    "${BB_CORE_BIN}" > "${DAEMON_LOG}" 2>&1 &
-    DAEMON_PID=$!
+	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
 
-    sleep 2
+	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
+	DAEMON_PID=$!
 
-    if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-        echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-        echo "--- Daemon Output ---"
-        cat "${DAEMON_LOG}"
-        echo "---------------------"
-        exit 1
-    fi
-    
-    echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-    
-    # Pre-emptively enforce module via CLI to ensure active state
-    "${BB_CLI_BIN}" enable shield > /dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."; exit 1;
+	sleep 2
+
+	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
+		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
+		echo "--- Daemon Output ---"
+		cat "${DAEMON_LOG}"
+		echo "---------------------"
+		exit 1
+	fi
+
+	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
+
+	# Pre-emptively enforce module via CLI to ensure active state
+	"${BB_CLI_BIN}" enable shield >/dev/null 2>&1 || {
+		echo "[-] Failed to enable the module."
+		exit 1
 	}
 }
 
 function verify_file_tampering() {
-    echo "  [*] Validating Core File Tampering Prevention (Expected: BLOCK)..."
-    
-    set +e
-    # Execute write attempt as the unprivileged user
-    su - "${TEST_USER}" -c "echo 'malicious_config' > ${CONFIG_TARGET}" > /dev/null 2>&1
-    local exit_config=$?
-    
-    su - "${TEST_USER}" -c "echo 'malicious_bytes' >> ${BINARY_TARGET}" > /dev/null 2>&1
-    local exit_binary=$?
-    set -e
+	echo "  [*] Validating Core File Tampering Prevention (Expected: BLOCK)..."
 
-    # Exit code 1 is standard for bash redirection "Permission denied" (-EACCES)
-    if [[ "${exit_config}" -eq 0 ]] || [[ "${exit_binary}" -eq 0 ]]; then
-        echo "[-] Assertion failed: Unprivileged user successfully wrote to a protected file (DAC override failed)!"
-        exit 1
-    fi
-    
-    echo "  [+] Unauthorized write access successfully vetoed (-EACCES)."
+	set +e
+	# Execute write attempt as the unprivileged user
+	su - "${TEST_USER}" -c "echo 'malicious_config' > ${CONFIG_TARGET}" >/dev/null 2>&1
+	local exit_config=$?
+
+	su - "${TEST_USER}" -c "echo 'malicious_bytes' >> ${BINARY_TARGET}" >/dev/null 2>&1
+	local exit_binary=$?
+	set -e
+
+	# Exit code 1 is standard for bash redirection "Permission denied" (-EACCES)
+	if [[ "${exit_config}" -eq 0 ]] || [[ "${exit_binary}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Unprivileged user successfully wrote to a protected file (DAC override failed)!"
+		exit 1
+	fi
+
+	echo "  [+] Unauthorized write access successfully vetoed (-EACCES)."
 }
 
 function verify_symlink_evasion() {
-    echo "  [*] Validating Symlink Indirection Evasion (Expected: BLOCK)..."
-    
-    set +e
-    # Attempt to write to the config file via an unprotected symlink in /tmp
-    su - "${TEST_USER}" -c "echo 'symlink_evasion' > ${SYMLINK_TARGET}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Symlink Indirection Evasion (Expected: BLOCK)..."
 
-    if [[ "${exit_code}" -eq 0 ]]; then
-        echo "[-] Assertion failed: Symlink evasion bypassed the LSM hook!"
-        exit 1
-    fi
-    
-    echo "  [+] Symlink evasion successfully thwarted (bpf_d_path resolved canonical path)."
+	set +e
+	# Attempt to write to the config file via an unprotected symlink in /tmp
+	su - "${TEST_USER}" -c "echo 'symlink_evasion' > ${SYMLINK_TARGET}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Symlink evasion bypassed the LSM hook!"
+		exit 1
+	fi
+
+	echo "  [+] Symlink evasion successfully thwarted (bpf_d_path resolved canonical path)."
 }
 
 function verify_file_read_allowed() {
-    echo "  [*] Validating Fast-Path Deferral for Read Access (Expected: ALLOW)..."
-    
-    # Populate safe content via root
-    echo "safe_config" > "${CONFIG_TARGET}"
-    
-    set +e
-    # Ensure unprivileged reads are NOT blocked by the MAC
-    su - "${TEST_USER}" -c "cat ${CONFIG_TARGET}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Fast-Path Deferral for Read Access (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Legitimate unprivileged read access was incorrectly blocked!"
-        exit 1
-    fi
-    
-    echo "  [+] Unprivileged read access cleanly bypassed."
+	# Populate safe content via root
+	echo "safe_config" >"${CONFIG_TARGET}"
+
+	set +e
+	# Ensure unprivileged reads are NOT blocked by the MAC
+	su - "${TEST_USER}" -c "cat ${CONFIG_TARGET}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Legitimate unprivileged read access was incorrectly blocked!"
+		exit 1
+	fi
+
+	echo "  [+] Unprivileged read access cleanly bypassed."
 }
 
 function verify_root_file_access() {
-    echo "  [*] Validating Administrative Privileges (Expected: ALLOW)..."
-    
-    set +e
-    # Root context (default execution of this script) should bypass the shield
-    echo "root_config" > "${CONFIG_TARGET}" 2>/dev/null
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating Administrative Privileges (Expected: ALLOW)..."
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Root user was locked out of EDR configuration!"
-        exit 1
-    fi
-    
-    echo "  [+] Administrative modifications correctly allowed."
+	set +e
+	# Root context (default execution of this script) should bypass the shield
+	echo "root_config" >"${CONFIG_TARGET}" 2>/dev/null
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Root user was locked out of EDR configuration!"
+		exit 1
+	fi
+
+	echo "  [+] Administrative modifications correctly allowed."
 }
 
 function verify_bpf_tampering() {
-    echo "  [*] Validating bpf() Syscall Tampering Protection (Expected: BLOCK)..."
-    
-    set +e
-    su - "${TEST_USER}" -c "${SHIELD_TESTER} bpf" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating bpf() Syscall Tampering Protection (Expected: BLOCK)..."
 
-    if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]]; then
-        echo "[-] Assertion failed: Unprivileged bpf() syscall was not blocked! (Exit code: ${exit_code})"
-        exit 1
-    fi
-    
-    echo "  [+] Unprivileged BPF operations successfully vetoed (-EPERM)."
+	set +e
+	su - "${TEST_USER}" -c "${SHIELD_TESTER} bpf" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: Unprivileged bpf() syscall was not blocked! (Exit code: ${exit_code})"
+		exit 1
+	fi
+
+	echo "  [+] Unprivileged BPF operations successfully vetoed (-EPERM)."
 }
 
 function verify_syslog_leak() {
-    echo "  [*] Validating syslog() Kernel Info Leak Protection (Expected: BLOCK)..."
-    
-    set +e
-    su - "${TEST_USER}" -c "${SHIELD_TESTER} syslog" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	echo "  [*] Validating syslog() Kernel Info Leak Protection (Expected: BLOCK)..."
 
-    if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]]; then
-        echo "[-] Assertion failed: Unprivileged syslog() reads were not blocked! (Exit code: ${exit_code})"
-        exit 1
-    fi
-    
-    echo "  [+] KASLR bypass vector successfully mitigated (-EPERM)."
+	set +e
+	su - "${TEST_USER}" -c "${SHIELD_TESTER} syslog" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: Unprivileged syslog() reads were not blocked! (Exit code: ${exit_code})"
+		exit 1
+	fi
+
+	echo "  [+] KASLR bypass vector successfully mitigated (-EPERM)."
 }
 
 function verify_ipc_detachment() {
-    echo "  [*] Validating dynamic LSM hook detachment..."
-    
-    "${BB_CLI_BIN}" disable shield > /dev/null || {
-        echo "[-] RPC invocation failed."; exit 1;
-    }
+	echo "  [*] Validating dynamic LSM hook detachment..."
 
-    set +e
-    su - "${TEST_USER}" -c "echo 'tampered_while_disabled' > ${CONFIG_TARGET}" > /dev/null 2>&1
-    local exit_code=$?
-    set -e
+	"${BB_CLI_BIN}" disable shield >/dev/null || {
+		echo "[-] RPC invocation failed."
+		exit 1
+	}
 
-    if [[ "${exit_code}" -ne 0 ]]; then
-        echo "[-] Assertion failed: Disabled module still blocked file modifications."
-        exit 1
-    fi
-    
-    echo "  [+] Hook cleanly detached. Execution allowed."
+	set +e
+	su - "${TEST_USER}" -c "echo 'tampered_while_disabled' > ${CONFIG_TARGET}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Disabled module still blocked file modifications."
+		exit 1
+	fi
+
+	echo "  [+] Hook cleanly detached. Execution allowed."
 }
 
 # ==========================================

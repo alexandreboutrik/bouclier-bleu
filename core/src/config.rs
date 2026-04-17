@@ -23,52 +23,52 @@ use std::path::Path;
 /// Strongly typed representation of the daemon's TOML configuration.
 #[derive(Deserialize, Debug, Default)]
 pub struct DaemonConfig {
-    /// A map of module slugs to their default startup state (true = enabled, false =
-    /// disabled).
-    #[serde(default)]
-    pub modules: HashMap<String, bool>,
+	/// A map of module slugs to their default startup state (true = enabled, false =
+	/// disabled).
+	#[serde(default)]
+	pub modules: HashMap<String, bool>,
 }
 
 impl DaemonConfig {
-    /// Discovers, parses, and loads the configuration file.
-    /// Falls back to default values if no file is found to prevent daemon crashes.
-    pub fn load() -> Self {
-        // Enforce strict production pathing in release builds.
-        #[cfg(not(debug_assertions))]
-        let search_paths = ["/etc/bouclier-bleu/config.toml"];
+	/// Discovers, parses, and loads the configuration file.
+	/// Falls back to default values if no file is found to prevent daemon crashes.
+	pub fn load() -> Self {
+		// Enforce strict production pathing in release builds.
+		#[cfg(not(debug_assertions))]
+		let search_paths = ["/etc/bouclier-bleu/config.toml"];
 
-        // Allow local working-directory fallbacks during development.
-        #[cfg(debug_assertions)]
-        let search_paths = ["/etc/bouclier-bleu/config.toml", "config.toml"];
+		// Allow local working-directory fallbacks during development.
+		#[cfg(debug_assertions)]
+		let search_paths = ["/etc/bouclier-bleu/config.toml", "config.toml"];
 
-        for path in search_paths {
-            if Path::new(path).exists() {
-                if let Ok(metadata) = fs::metadata(path) {
-                    if metadata.uid() != 0 {
-                        panic!(
-                            "FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.",
-                            path
-                        );
-                    }
-                }
+		for path in search_paths {
+			if Path::new(path).exists() {
+				if let Ok(metadata) = fs::metadata(path) {
+					if metadata.uid() != 0 {
+						panic!(
+							"FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.",
+							path
+						);
+					}
+				}
 
-                match fs::read_to_string(path) {
-                    Ok(contents) => match toml::from_str(&contents) {
-                        Ok(config) => {
-                            println!("· [Config] Loaded configuration from {}", path);
-                            return config;
-                        }
-                        Err(e) => panic!(
-                            "FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.",
-                            path, e
-                        ),
-                    },
-                    Err(e) => eprintln!("· [Warning] Failed to read {}: {}", path, e),
-                }
-            }
-        }
+				match fs::read_to_string(path) {
+					Ok(contents) => match toml::from_str(&contents) {
+						Ok(config) => {
+							println!("· [Config] Loaded configuration from {}", path);
+							return config;
+						}
+						Err(e) => panic!(
+							"FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.",
+							path, e
+						),
+					},
+					Err(e) => eprintln!("· [Warning] Failed to read {}: {}", path, e),
+				}
+			}
+		}
 
-        println!("· [Config] No configuration file found. Operating with implicit defaults.");
-        Self::default()
-    }
+		println!("· [Config] No configuration file found. Operating with implicit defaults.");
+		Self::default()
+	}
 }

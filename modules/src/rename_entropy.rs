@@ -30,46 +30,46 @@ use walkdir::WalkDir;
 /// issues.
 #[derive(Debug)]
 pub struct RenameAlert {
-    pub pid: u32,
-    pub ppid: u32,
-    pub full_path: String,
+	pub pid: u32,
+	pub ppid: u32,
+	pub full_path: String,
 }
 
 impl RenameAlert {
-    /// Safe Deserialization Engine.
-    ///
-    /// Extracts structured fields from the contiguous memory slice provided by
-    /// the kernel via the RingBuffer. By abstracting the byte-slice parsing
-    /// through `BpfReader`, this engine entirely eliminates the need for C-FFI
-    /// or `unsafe` blocks, neutralizing the risk of buffer overflows,
-    /// out-of-bounds access, or panics from truncated kernel strings.
-    pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
-        /*
-         * Enforce strict structural boundaries:
-         * 4 bytes (u32 PID) + 4 bytes (u32 PPID) + 4096 bytes (dir_path) + 256
-         * bytes (file_name) = 4356 bytes. This validates the payload integrity
-         * before any memory reads occur.
-         */
-        if data.len() < 4360 {
-            return Err("Telemetry payload violates minimum size constraints.");
-        }
+	/// Safe Deserialization Engine.
+	///
+	/// Extracts structured fields from the contiguous memory slice provided by
+	/// the kernel via the RingBuffer. By abstracting the byte-slice parsing
+	/// through `BpfReader`, this engine entirely eliminates the need for C-FFI
+	/// or `unsafe` blocks, neutralizing the risk of buffer overflows,
+	/// out-of-bounds access, or panics from truncated kernel strings.
+	pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+		/*
+		 * Enforce strict structural boundaries:
+		 * 4 bytes (u32 PID) + 4 bytes (u32 PPID) + 4096 bytes (dir_path) + 256
+		 * bytes (file_name) = 4356 bytes. This validates the payload integrity
+		 * before any memory reads occur.
+		 */
+		if data.len() < 4360 {
+			return Err("Telemetry payload violates minimum size constraints.");
+		}
 
-        let mut reader = BpfReader::new(data);
+		let mut reader = BpfReader::new(data);
 
-        let pid = reader.read_u32()?;
-        let ppid = reader.read_u32()?;
-        let dir_path = reader.read_string(4096)?;
-        let file_name = reader.read_string(256)?;
+		let pid = reader.read_u32()?;
+		let ppid = reader.read_u32()?;
+		let dir_path = reader.read_string(4096)?;
+		let file_name = reader.read_string(256)?;
 
-        let clean_dir = dir_path.trim_end_matches('/');
-        let full_path = format!("{}/{}", clean_dir, file_name);
+		let clean_dir = dir_path.trim_end_matches('/');
+		let full_path = format!("{}/{}", clean_dir, file_name);
 
-        Ok(Self {
-            pid,
-            ppid,
-            full_path,
-        })
-    }
+		Ok(Self {
+			pid,
+			ppid,
+			full_path,
+		})
+	}
 }
 
 /// Temporal Heuristic State
@@ -78,8 +78,8 @@ impl RenameAlert {
 /// parent orchestrator. Utilizing a sliding time window ensures transient,
 /// benign spikes do not result in catastrophic false-positive terminations.
 struct PpidStrike {
-    count: u32,
-    first_strike: Instant,
+	count: u32,
+	first_strike: Instant,
 }
 
 /*
@@ -91,7 +91,7 @@ struct PpidStrike {
 static STRIKE_TRACKER: OnceLock<Mutex<HashMap<u32, PpidStrike>>> = OnceLock::new();
 
 fn get_tracker() -> &'static Mutex<HashMap<u32, PpidStrike>> {
-    STRIKE_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+	STRIKE_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Asynchronous Threat Remediation (Process Tree Eradication)
@@ -101,32 +101,32 @@ fn get_tracker() -> &'static Mutex<HashMap<u32, PpidStrike>> {
 /// prevent disk corruption (TOCTOU), this routine cleans up the surrounding
 /// malicious infrastructure to prevent re-spawning.
 fn neutralize_threat_tree(target_ppid: u32) {
-    let mut sys = System::new_all();
-    sys.refresh_processes();
+	let mut sys = System::new_all();
+	sys.refresh_processes();
 
-    let target = Pid::from_u32(target_ppid);
+	let target = Pid::from_u32(target_ppid);
 
-    /*
-     * By killing the parent first, we immediately break the control loop,
-     * preventing the threat actor from dynamically spawning new worker threads
-     * while we traverse the process list.
-     */
-    if let Some(parent) = sys.process(target) {
-        parent.kill_with(Signal::Kill);
-    }
+	/*
+	 * By killing the parent first, we immediately break the control loop,
+	 * preventing the threat actor from dynamically spawning new worker threads
+	 * while we traverse the process list.
+	 */
+	if let Some(parent) = sys.process(target) {
+		parent.kill_with(Signal::Kill);
+	}
 
-    // Eradicate Sibling/Child Workers
-    for (pid, process) in sys.processes() {
-        if let Some(parent_pid) = process.parent() {
-            if parent_pid == target {
-                process.kill_with(Signal::Kill);
-                println!(
-                    "Bouclier Bleu [REMEDIATION]: Collateral worker terminated -> PID: {}",
-                    pid
-                );
-            }
-        }
-    }
+	// Eradicate Sibling/Child Workers
+	for (pid, process) in sys.processes() {
+		if let Some(parent_pid) = process.parent() {
+			if parent_pid == target {
+				process.kill_with(Signal::Kill);
+				println!(
+					"Bouclier Bleu [REMEDIATION]: Collateral worker terminated -> PID: {}",
+					pid
+				);
+			}
+		}
+	}
 }
 
 /*
@@ -140,153 +140,153 @@ fn neutralize_threat_tree(target_ppid: u32) {
  * SIEM forwarding, and secondary remediation actions.
  */
 define_security_module!(
-    struct: RenameEntropy,
-    name: "Ransomware Rename Entropy Monitor",
-    slug: "rename_entropy",
-    parser: RenameAlert::try_from_bytes,
-    handler: |alert: RenameAlert| {
-        let mut tracker = get_tracker().lock().unwrap();
-        let now = Instant::now();
+	struct: RenameEntropy,
+	name: "Ransomware Rename Entropy Monitor",
+	slug: "rename_entropy",
+	parser: RenameAlert::try_from_bytes,
+	handler: |alert: RenameAlert| {
+		let mut tracker = get_tracker().lock().unwrap();
+		let now = Instant::now();
 
-        /*
-         * FIXME: Forwarding to standard output for PoC.
-         * Production iterations should forward this object to a SIEM
-         * connector or trigger automated host-isolation protocols.
-         */
-        println!(
-            "Bouclier Bleu [FATAL]: PID {} triggered ransomware entropy heuristic on target: {}",
-            alert.pid, alert.full_path
-        );
+		/*
+		 * FIXME: Forwarding to standard output for PoC.
+		 * Production iterations should forward this object to a SIEM
+		 * connector or trigger automated host-isolation protocols.
+		 */
+		println!(
+			"Bouclier Bleu [FATAL]: PID {} triggered ransomware entropy heuristic on target: {}",
+			alert.pid, alert.full_path
+		);
 
-        let strike = tracker.entry(alert.ppid).or_insert(PpidStrike {
-            count: 0,
-            first_strike: now,
-        });
+		let strike = tracker.entry(alert.ppid).or_insert(PpidStrike {
+			count: 0,
+			first_strike: now,
+		});
 
-        /*
-         * Temporal Correlation Matrix (2-Second Sliding Window)
-         * Modern ransomware operates asynchronously, spawning multiple threads
-         * rapidly. If an orchestrator triggers 3 high-entropy violations within
-         * a strict 2-second window, statistical confidence of malicious intent
-         * approaches 100%, warranting an automated tree termination.
-         */
-        if now.duration_since(strike.first_strike) > Duration::from_secs(2) {
-            // Window expired. Demote risk score and reset baseline.
-            strike.count = 1;
-            strike.first_strike = now;
-        } else {
-            strike.count += 1;
-        }
+		/*
+		 * Temporal Correlation Matrix (2-Second Sliding Window)
+		 * Modern ransomware operates asynchronously, spawning multiple threads
+		 * rapidly. If an orchestrator triggers 3 high-entropy violations within
+		 * a strict 2-second window, statistical confidence of malicious intent
+		 * approaches 100%, warranting an automated tree termination.
+		 */
+		if now.duration_since(strike.first_strike) > Duration::from_secs(2) {
+			// Window expired. Demote risk score and reset baseline.
+			strike.count = 1;
+			strike.first_strike = now;
+		} else {
+			strike.count += 1;
+		}
 
-        if strike.count >= 3 {
-            println!(
-                "Bouclier Bleu [FATAL]: PPID {} crossed heuristic threshold (3 strikes/2s). Executing tree eradication.",
-                alert.ppid
-            );
+		if strike.count >= 3 {
+			println!(
+				"Bouclier Bleu [FATAL]: PPID {} crossed heuristic threshold (3 strikes/2s). Executing tree eradication.",
+				alert.ppid
+			);
 
-            neutralize_threat_tree(alert.ppid);
+			neutralize_threat_tree(alert.ppid);
 
-            /*
-             * Flush localized state to prevent ghost-strikes if the OS recycles
-             * the PID for a future, benign process.
-             */
-            tracker.remove(&alert.ppid);
-        }
-    },
-    capacities: || -> std::collections::HashMap<String, u32> {
-        /*
-         * JUST-IN-TIME (JIT) PROTECTED_DIRS MAP SIZING HEURISTIC
-         * To maintain a lightweight EDR footprint, we perform a rapid pre-scan
-         * of the filesystem before instructing the kernel to allocate memory.
-         * We apply a 1.25x scaling factor (25% safety buffer) to accommodate
-         * future directory creations during the system's uptime. Because the
-         * Linux VFS layer heavily caches dentries, this initial pass pulls the
-         * directory metadata from disk to RAM, dramatically accelerating the
-         * subsequent `init` population pass and practically nullifying any
-         * perceived performance penalty of the double-loop.
-         */
-        let mut count = 0;
-        let target_paths = ["/home", "/var", "/etc", "/opt"];
-        let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
+			/*
+			 * Flush localized state to prevent ghost-strikes if the OS recycles
+			 * the PID for a future, benign process.
+			 */
+			tracker.remove(&alert.ppid);
+		}
+	},
+	capacities: || -> std::collections::HashMap<String, u32> {
+		/*
+		 * JUST-IN-TIME (JIT) PROTECTED_DIRS MAP SIZING HEURISTIC
+		 * To maintain a lightweight EDR footprint, we perform a rapid pre-scan
+		 * of the filesystem before instructing the kernel to allocate memory.
+		 * We apply a 1.25x scaling factor (25% safety buffer) to accommodate
+		 * future directory creations during the system's uptime. Because the
+		 * Linux VFS layer heavily caches dentries, this initial pass pulls the
+		 * directory metadata from disk to RAM, dramatically accelerating the
+		 * subsequent `init` population pass and practically nullifying any
+		 * perceived performance penalty of the double-loop.
+		 */
+		let mut count = 0;
+		let target_paths = ["/home", "/var", "/etc", "/opt"];
+		let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
 
-        for path in target_paths {
-            let walker = WalkDir::new(path).into_iter().filter_entry(|e| {
-                let fname = e.file_name().to_string_lossy();
-                if !fname.starts_with('.') { return true; }
-                critical_hidden.contains(&fname.as_ref())
-            });
+		for path in target_paths {
+			let walker = WalkDir::new(path).into_iter().filter_entry(|e| {
+				let fname = e.file_name().to_string_lossy();
+				if !fname.starts_with('.') { return true; }
+				critical_hidden.contains(&fname.as_ref())
+			});
 
-            for entry in walker.filter_map(|e| e.ok()) {
-                if entry.file_type().is_dir() {
-                    count += 1;
-                }
-            }
-        }
+			for entry in walker.filter_map(|e| e.ok()) {
+				if entry.file_type().is_dir() {
+					count += 1;
+				}
+			}
+		}
 
-        // Apply a 25% safety buffer for new directories, with an absolute
-        // minimum of 8192
-        let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
+		// Apply a 25% safety buffer for new directories, with an absolute
+		// minimum of 8192
+		let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
 
-        let mut caps = std::collections::HashMap::new();
-        caps.insert("protected_dirs".to_string(), safe_capacity);
-        caps
-    },
-    init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
-        let bpf_map = provider.get_map("protected_dirs")?;
+		let mut caps = std::collections::HashMap::new();
+		caps.insert("protected_dirs".to_string(), safe_capacity);
+		caps
+	},
+	init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+		let bpf_map = provider.get_map("protected_dirs")?;
 
-        let target_paths = ["/home", "/var", "/etc", "/opt"];
-        let is_protected: [u8; 1] = [1];
+		let target_paths = ["/home", "/var", "/etc", "/opt"];
+		let is_protected: [u8; 1] = [1];
 
-        /*
-         * HARDWARE-BACKED DIRECTORY WATCHLIST INITIALIZATION
-         * Threat Model: Advanced adversaries routinely use mount namespaces
-         * (`unshare -m`) or bind-mounts to obfuscate paths and bypass
-         * string-matching security heuristics. To neutralize this, the
-         * userland daemon resolves the exact physical `inode` of target
-         * directories at boot. These hardware-level identifiers are passed to
-         * the kernel via the `protected_dirs` eBPF Map. The kernel hook then
-         * performs validation against the inode that is entirely immune to
-         * namespace manipulation.
-         */
-        for path in target_paths {
-            println!("Bouclier Bleu [Setup]: Recursively indexing {}...", path);
+		/*
+		 * HARDWARE-BACKED DIRECTORY WATCHLIST INITIALIZATION
+		 * Threat Model: Advanced adversaries routinely use mount namespaces
+		 * (`unshare -m`) or bind-mounts to obfuscate paths and bypass
+		 * string-matching security heuristics. To neutralize this, the
+		 * userland daemon resolves the exact physical `inode` of target
+		 * directories at boot. These hardware-level identifiers are passed to
+		 * the kernel via the `protected_dirs` eBPF Map. The kernel hook then
+		 * performs validation against the inode that is entirely immune to
+		 * namespace manipulation.
+		 */
+		for path in target_paths {
+			println!("Bouclier Bleu [Setup]: Recursively indexing {}...", path);
 
-            // Optimization & Constraint Management
-            // The eBPF hash map has a strict maximum entry limit (1,048,576).
-            // To prevent capacity exhaustion and optimize lookup latency, we
-            // proactively filter out hidden directories (e.g., `~/.cache`,
-            // `~/.mozilla`) which generally contain high-churn, benign files
-            // that do not require strict ransomware entropy monitoring.
-            let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
-            let walker = WalkDir::new(path)
-                .into_iter()
-                .filter_entry(move |e| {
-                    let file_name = e.file_name().to_string_lossy();
+			// Optimization & Constraint Management
+			// The eBPF hash map has a strict maximum entry limit (1,048,576).
+			// To prevent capacity exhaustion and optimize lookup latency, we
+			// proactively filter out hidden directories (e.g., `~/.cache`,
+			// `~/.mozilla`) which generally contain high-churn, benign files
+			// that do not require strict ransomware entropy monitoring.
+			let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
+			let walker = WalkDir::new(path)
+				.into_iter()
+				.filter_entry(move |e| {
+					let file_name = e.file_name().to_string_lossy();
 
-                    if !file_name.starts_with('.') {
-                        return true;
-                    }
+					if !file_name.starts_with('.') {
+						return true;
+					}
 
-                    critical_hidden.contains(&file_name.as_ref())
-                });
+					critical_hidden.contains(&file_name.as_ref())
+				});
 
-            for entry in walker.filter_map(|e| e.ok()) {
-                // System-level Inode Extraction
-                // We strictly index directories because the `rename` syscall's
-                // `new_dir` parameter provided to the LSM hook points to the
-                // destination directory's inode structure, not the individual
-                // file itself.
-                if entry.file_type().is_dir() {
-                    if let Ok(metadata) = entry.metadata() {
-                        let key_bytes = crate::generate_hardware_key(&metadata);
-                        bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-                            .map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
-                    }
-                }
-            }
+			for entry in walker.filter_map(|e| e.ok()) {
+				// System-level Inode Extraction
+				// We strictly index directories because the `rename` syscall's
+				// `new_dir` parameter provided to the LSM hook points to the
+				// destination directory's inode structure, not the individual
+				// file itself.
+				if entry.file_type().is_dir() {
+					if let Ok(metadata) = entry.metadata() {
+						let key_bytes = crate::generate_hardware_key(&metadata);
+						bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+							.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
+					}
+				}
+			}
 
-            println!("Bouclier Bleu [Setup]: Protected {} and all subdirectories.", path);
-        }
-        Ok(())
-    }
+			println!("Bouclier Bleu [Setup]: Protected {} and all subdirectories.", path);
+		}
+		Ok(())
+	}
 );

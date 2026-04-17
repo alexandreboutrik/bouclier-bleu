@@ -16,9 +16,9 @@
  */
 
 #include "include/vmlinux.h"
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
 
 #include <asm-generic/errno.h>
 
@@ -31,24 +31,24 @@ char LICENSE[] SEC("license") = "GPL";
 #define O_WRONLY 00000001
 #endif
 #ifndef O_RDWR
-#define O_RDWR   00000002
+#define O_RDWR 00000002
 #endif
 #ifndef O_TRUNC
-#define O_TRUNC  00001000
+#define O_TRUNC 00001000
 #endif
 
 #ifndef S_IFMT
-#define S_IFMT  00170000
+#define S_IFMT 00170000
 #endif
 #ifndef S_IFREG
-#define S_IFREG  0100000
+#define S_IFREG 0100000
 #endif
 #ifndef S_ISREG
-#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
 
 #define ACTION_FILE_TAMPER 1
-#define ACTION_BPF_TAMPER  2
+#define ACTION_BPF_TAMPER 2
 #define ACTION_SYSLOG_LEAK 3
 
 /**
@@ -61,9 +61,9 @@ char LICENSE[] SEC("license") = "GPL";
  * userland to ensure safe zero-copy deserialization.
  */
 struct shield_alert {
-    __u32 pid;
-    __u32 action_type;
-    char target[PATH_MAX];
+	__u32 pid;
+	__u32 action_type;
+	char target[PATH_MAX];
 };
 
 BOUCLIER_PATH_BUFFER_MAP;
@@ -73,36 +73,36 @@ BOUCLIER_PROTECTED_FILES_MAP;
 
 /*
  * Defense Heuristic : Architecture Tampering (Config & Binary)
- * Hooks into the file opening lifecycle to enforce an immutable O_RDONLY 
+ * Hooks into the file opening lifecycle to enforce an immutable O_RDONLY
  * policy for critical EDR files for all unprivileged users. This acts as a
  * mandatory access control fail-safe even if a sysadmin accidentally executes
  * `chmod 777 /etc/bouclier-bleu/config.toml`.
  */
 SEC("lsm/file_open")
 int BPF_PROG(core_shield_file_open, struct file *file) {
-    if (!is_module_active(&state_map)) {
-        return 0;
-    }
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
 
-    unsigned int f_flags = file->f_flags;
-    
-    /* Fast-Path Deferral:
-     * If the file is only being opened for reading without truncation, it's
+	unsigned int f_flags = file->f_flags;
+
+	/* Fast-Path Deferral:
+	 * If the file is only being opened for reading without truncation, it's
 	 * safe. We allow the operation to proceed without incurring string
 	 * resolution overhead.
-     */
-    if (!((f_flags & O_WRONLY) || (f_flags & O_RDWR) || (f_flags & O_TRUNC))) {
-        return 0; 
-    }
+	 */
+	if (!((f_flags & O_WRONLY) || (f_flags & O_RDWR) || (f_flags & O_TRUNC))) {
+		return 0;
+	}
 
-	/* UID Fast-Path 
-     * System daemons (root) are permitted to modify files. Returning early
+	/* UID Fast-Path
+	 * System daemons (root) are permitted to modify files. Returning early
 	 * here saves us from executing expensive BPF_CORE_READs and Map Lookups
 	 * for legitimate, high-frequency system I/O.
-     */
-    if ((__u32)bpf_get_current_uid_gid() == 0) {
-        return 0;
-    }
+	 */
+	if ((__u32)bpf_get_current_uid_gid() == 0) {
+		return 0;
+	}
 
 	umode_t i_mode = BPF_CORE_READ(file, f_inode, i_mode);
 	if (!S_ISREG(i_mode)) {
@@ -110,43 +110,46 @@ int BPF_PROG(core_shield_file_open, struct file *file) {
 	}
 
 	/*
-     * Hardware Validation
-     * Extract the composite hardware IDs directly from the target file's
+	 * Hardware Validation
+	 * Extract the composite hardware IDs directly from the target file's
 	 * inode. This bypasses all naming and namespace layers, providing
 	 * unevadable identity verification.
-     */
-    struct dir_id f_id = {};
-    extract_dir_id_from_inode(BPF_CORE_READ(file, f_inode), &f_id);
+	 */
+	struct dir_id f_id = {};
+	extract_dir_id_from_inode(BPF_CORE_READ(file, f_inode), &f_id);
 
-    __u8 *is_protected = bpf_map_lookup_elem(&protected_files, &f_id);
-    if (is_protected && *is_protected == 1) {
-            struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-        if (event) {
+	__u8 *is_protected = bpf_map_lookup_elem(&protected_files, &f_id);
+	if (is_protected && *is_protected == 1) {
+		struct shield_alert *event =
+			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+		if (event) {
 			BPF_SAFE_MEMSET(event, sizeof(*event));
 
-            event->pid = bpf_get_current_pid_tgid() >> 32;
-            event->action_type = ACTION_FILE_TAMPER;
-                
-            /* Telemetry Fallback: Best-effort path resolution for the
+			event->pid = bpf_get_current_pid_tgid() >> 32;
+			event->action_type = ACTION_FILE_TAMPER;
+
+			/* Telemetry Fallback: Best-effort path resolution for the
 			 * alert log. If the path exceeds 4096 bytes (-ENAMETOOLONG),
 			 * we skip resolution but still block the event and send the
 			 * alert, eliminating the fail-open truncation vulnerability.
-             */
-            __u32 key = 0;
-            char *path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
-            if (path_buf) {
-                long len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
-                if (len > 0 && len != -ENAMETOOLONG) {
-                    bpf_probe_read_kernel_str(event->target, PATH_MAX, path_buf);
-                }
-            }
-            bpf_ringbuf_submit(event, 0);
-        }
-        bpf_printk("Bouclier Bleu [BLOCK]: Unauthorized modification of core EDR file.\n");
-        return -EACCES; // Fail-closed execution block
-    }
+			 */
+			__u32 key = 0;
+			char *path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
+			if (path_buf) {
+				long len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
+				if (len > 0 && len != -ENAMETOOLONG) {
+					bpf_probe_read_kernel_str(event->target, PATH_MAX,
+											  path_buf);
+				}
+			}
+			bpf_ringbuf_submit(event, 0);
+		}
+		bpf_printk("Bouclier Bleu [BLOCK]: Unauthorized modification of core "
+				   "EDR file.\n");
+		return -EACCES; // Fail-closed execution block
+	}
 
-    return 0;
+	return 0;
 }
 
 /*
@@ -155,57 +158,64 @@ int BPF_PROG(core_shield_file_open, struct file *file) {
  * using the `bpf()` syscall. We strictly gate this syscall to root.
  */
 SEC("lsm/bpf")
-int BPF_PROG(core_shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
-    if (!is_module_active(&state_map)) {
-        return 0;
-    }
+int BPF_PROG(core_shield_bpf, int cmd, union bpf_attr *attr,
+			 unsigned int size) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
 
-    if ((__u32)bpf_get_current_uid_gid() != 0) {
-        struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-        if (event) {
+	if ((__u32)bpf_get_current_uid_gid() != 0) {
+		struct shield_alert *event =
+			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+		if (event) {
 			BPF_SAFE_MEMSET(event, sizeof(*event));
 
-            event->pid = bpf_get_current_pid_tgid() >> 32;
-            event->action_type = ACTION_BPF_TAMPER;
-            char bpf_target[] = "bpf() syscall invocation";
-            bpf_probe_read_kernel_str(event->target, sizeof(bpf_target), bpf_target);
-            bpf_ringbuf_submit(event, 0);
-        }
-        bpf_printk("Bouclier Bleu [BLOCK]: Unprivileged bpf() tampering prevented.\n");
-        return -EPERM;
-    }
+			event->pid = bpf_get_current_pid_tgid() >> 32;
+			event->action_type = ACTION_BPF_TAMPER;
+			char bpf_target[] = "bpf() syscall invocation";
+			bpf_probe_read_kernel_str(event->target, sizeof(bpf_target),
+									  bpf_target);
+			bpf_ringbuf_submit(event, 0);
+		}
+		bpf_printk(
+			"Bouclier Bleu [BLOCK]: Unprivileged bpf() tampering prevented.\n");
+		return -EPERM;
+	}
 
-    return 0;
+	return 0;
 }
 
 /*
  * Defense heuristic : KASLR Bypass Prevention
- * The kernel ring buffer (dmesg) contains highly sensitive information, 
- * including crash dumps, hardware faults, and kernel pointer addresses. 
- * Attackers parse this to bypass Kernel Address Space Layout Randomization 
- * (KASLR) to build ROP chains. This enforces `kernel.dmesg_restrict=1` 
+ * The kernel ring buffer (dmesg) contains highly sensitive information,
+ * including crash dumps, hardware faults, and kernel pointer addresses.
+ * Attackers parse this to bypass Kernel Address Space Layout Randomization
+ * (KASLR) to build ROP chains. This enforces `kernel.dmesg_restrict=1`
  * directly at the LSM layer.
  */
 SEC("lsm/syslog")
 int BPF_PROG(core_shield_syslog, int type) {
-    if (!is_module_active(&state_map)) {
-        return 0;
-    }
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
 
-    if ((__u32)bpf_get_current_uid_gid() != 0) {
-		struct shield_alert *event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-        if (event) {
+	if ((__u32)bpf_get_current_uid_gid() != 0) {
+		struct shield_alert *event =
+			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+		if (event) {
 			BPF_SAFE_MEMSET(event, sizeof(*event));
 
-            event->pid = bpf_get_current_pid_tgid() >> 32;
-            event->action_type = ACTION_SYSLOG_LEAK;
-            char dmesg_target[] = "kernel syslog/dmesg read";
-            bpf_probe_read_kernel_str(event->target, sizeof(dmesg_target), dmesg_target);
-            bpf_ringbuf_submit(event, 0);
-        }
-        bpf_printk("Bouclier Bleu [BLOCK]: Unprivileged dmesg kernel info leak prevented.\n");
-        return -EPERM;
-    }
+			event->pid = bpf_get_current_pid_tgid() >> 32;
+			event->action_type = ACTION_SYSLOG_LEAK;
+			char dmesg_target[] = "kernel syslog/dmesg read";
+			bpf_probe_read_kernel_str(event->target, sizeof(dmesg_target),
+									  dmesg_target);
+			bpf_ringbuf_submit(event, 0);
+		}
+		bpf_printk("Bouclier Bleu [BLOCK]: Unprivileged dmesg kernel info leak "
+				   "prevented.\n");
+		return -EPERM;
+	}
 
-    return 0;
+	return 0;
 }
