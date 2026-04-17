@@ -17,37 +17,111 @@
 # limitations under the License.
 
 # Exit immediately on uninitialized variables or pipe failures
-set -euo pipefail
+set -uo pipefail
 
 # ==========================================
 # DEFAULT VARIABLES & OPTIONS
 # ==========================================
+: "${BB_HELP:=0}"
+: "${BB_MODE:=""}"
 
-# Resolve the absolute path of the project root regardless of where the script is called from
+# Resolve the absolute path of the project root
 : "${SCRIPT_DIR:="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"}"
 : "${MAIN_DIR:="$(dirname "${SCRIPT_DIR}")"}"
 
-# Indentation configuration for Bash (0 = use tabs)
+# Formatting rules (4-width tabs)
 : "${BASH_INDENT:=0}"
-
-# Inline configuration for C/eBPF
 CLANG_STYLE="{BasedOnStyle: LLVM, UseTab: Always, IndentWidth: 4, TabWidth: 4}"
+
+# Tool flags (populated based on mode)
+RUST_FLAGS=""
+CLANG_FLAGS=""
+SHFMT_FLAGS=""
+
+# ==========================================
+# COMMAND LINE ARGUMENT PARSING
+# ==========================================
+
+# If no arguments are passed, trigger the help menu
+if [ $# -eq 0 ]; then
+	BB_HELP=1
+fi
+
+while [ $# -ne 0 ]; do
+	case "${1}" in
+	"-help" | "-h" | "help")
+		BB_HELP=1
+		;;
+	"apply")
+		BB_MODE="apply"
+		;;
+	"check")
+		BB_MODE="check"
+		;;
+	*)
+		echo "Error: Unknown argument '${1}'"
+		echo
+		BB_HELP=1
+		;;
+	esac
+	shift
+done
 
 # ==========================================
 # FUNCTIONS
 # ==========================================
 
+function print_help() {
+	if [ "${BB_HELP}" != "1" ]; then return; fi
+
+	echo "USAGE:"
+	echo "  ./scripts/format.sh [MODE] [OPTIONS]"
+	echo
+	echo "MODES:"
+	echo "  apply                   Format files in-place."
+	echo "  check                   Check if files are formatted correctly (for CI/CD)."
+	echo
+	echo "OPTIONS:"
+	echo "  -help, -h               Display this help message and exit."
+	echo
+	echo "EXAMPLES:"
+	echo "  $ ./scripts/format.sh apply"
+	echo "  $ ./scripts/format.sh check"
+	exit 0
+}
+
+function init_env() {
+	if [ -z "${BB_MODE}" ]; then
+		echo "Error: Mode not specified. Use 'apply' or 'check'. Exiting."
+		echo
+		BB_HELP=1 print_help
+		exit 1
+	fi
+
+	echo "Starting code formatter for Bouclier Bleu..."
+
+	if [ "${BB_MODE}" == "check" ]; then
+		echo "Mode: CHECK (No files will be modified)"
+		RUST_FLAGS="--check"
+		CLANG_FLAGS="--dry-run -Werror"
+		SHFMT_FLAGS="-d"
+	else
+		echo "Mode: APPLY (Files will be modified in-place)"
+		RUST_FLAGS=""
+		CLANG_FLAGS="-i"
+		SHFMT_FLAGS="-w"
+	fi
+}
+
 function format_rust() {
-	echo -e "\n➤ Formatting Rust files..."
+	echo -e "\n➤ Processing Rust files..."
 
 	pushd "${MAIN_DIR}" >/dev/null || exit 1
 
 	if command -v cargo >/dev/null 2>&1; then
-		# The '--' tells cargo fmt to pass the following arguments directly to
-		# rustfmt
-		cargo fmt -- --config hard_tabs=true,tab_spaces=4 ||
+		cargo fmt -- ${RUST_FLAGS} --config hard_tabs=true,tab_spaces=4 ||
 			{
-				echo "Failed to format Rust files via cargo. Exiting."
+				echo "Rust formatting failed. Exiting."
 				exit 1
 			}
 		echo "  [+] Rust formatting complete."
@@ -59,13 +133,13 @@ function format_rust() {
 }
 
 function format_c() {
-	echo -e "\n➤ Formatting C and eBPF files..."
+	echo -e "\n➤ Processing C and eBPF files..."
 
 	if command -v clang-format >/dev/null 2>&1; then
 		find "${MAIN_DIR}/bpf" -type f \( -name '*.c' -o -name '*.h' \) \
-			-exec clang-format -style="${CLANG_STYLE}" -i {} + ||
+			-exec clang-format -style="${CLANG_STYLE}" ${CLANG_FLAGS} {} + ||
 			{
-				echo "Failed to format C files. Exiting."
+				echo "C/eBPF formatting failed. Exiting."
 				exit 1
 			}
 
@@ -76,15 +150,13 @@ function format_c() {
 }
 
 function format_bash() {
-	echo -e "\n➤ Formatting Bash scripts..."
+	echo -e "\n➤ Processing Bash scripts..."
 
 	if command -v shfmt >/dev/null 2>&1; then
-		# Find all .sh files but ignore the target/ dir (Rust build artifacts)
-		# and .git/
 		find "${MAIN_DIR}" -type f -name '*.sh' ! -path "*/target/*" ! -path "*/.git/*" \
-			-exec shfmt -w -i "${BASH_INDENT}" {} + ||
+			-exec shfmt ${SHFMT_FLAGS} -i "${BASH_INDENT}" {} + ||
 			{
-				echo "Failed to format Bash files. Exiting."
+				echo "Bash formatting failed. Exiting."
 				exit 1
 			}
 
@@ -98,10 +170,13 @@ function format_bash() {
 # MAIN EXECUTION
 # ==========================================
 
-echo "Starting code formatter for Bouclier Bleu..."
+# Print help and exit if triggered
+print_help
 
+# Standard execution flow
+init_env
 format_rust
 format_c
 format_bash
 
-echo -e "\nFormatting complete!"
+echo -e "\nFormatting process finished successfully!"

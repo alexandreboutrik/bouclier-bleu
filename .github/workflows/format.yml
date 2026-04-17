@@ -1,0 +1,35 @@
+name: Format Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-formatting:
+    name: Verify Code Formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install C and Bash formatters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format shfmt
+
+      - name: Enforce Formatting
+        run: ./scripts/format.sh check
