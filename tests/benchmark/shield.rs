@@ -60,18 +60,30 @@ fn execute_warmup(dir: &str, count: usize) {
     }
 }
 
-/// Dynamically extracts module slugs from the CLI list output.
+/// Dynamically extracts module slugs from the CLI list output using structural parsing.
 fn get_modules_from_cli(cli_bin: &Path) -> Vec<String> {
     let output = Command::new(cli_bin).arg("list").output().expect("Failed to run CLI list");
     let stdout = String::from_utf8_lossy(&output.stdout);
     
     let mut modules = Vec::new();
-    for word in stdout.split_whitespace() {
-        let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-        if clean_word.contains('_') {
-            modules.push(clean_word.to_string());
+    
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        
+        // Only process lines that contain our known status brackets
+        if trimmed.starts_with('[') && (trimmed.contains("[ACTIVE]") || trimmed.contains("[INACTIVE]")) {
+            
+            // Split the line by spaces.
+            // Example: ["[ACTIVE]", "exec_block", "(Untrusted", ...]
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            
+            // The module slug is always the second word (index 1)
+            if parts.len() >= 2 {
+                modules.push(parts[1].to_string());
+            }
         }
     }
+    
     modules.sort();
     modules.dedup();
     modules

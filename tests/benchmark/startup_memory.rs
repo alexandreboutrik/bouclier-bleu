@@ -42,17 +42,27 @@ fn provision_dummy_filesystem() {
     println!("[INFO] Filesystem provisioning complete.");
 }
 
-/// Dynamically extracts module slugs from the CLI output.
-fn get_active_modules(cli_bin: &Path) -> Vec<String> {
-    let output = Command::new(cli_bin).arg("list").output().expect("Failed to run CLI");
+/// Dynamically extracts module slugs from the CLI list output using structural parsing.
+fn get_modules_from_cli(cli_bin: &Path) -> Vec<String> {
+    let output = Command::new(cli_bin).arg("list").output().expect("Failed to run CLI list");
     let stdout = String::from_utf8_lossy(&output.stdout);
     
     let mut modules = Vec::new();
-    // Heuristic: Module slugs use snake_case. We extract words containing '_'
-    for word in stdout.split_whitespace() {
-        let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-        if clean_word.contains('_') {
-            modules.push(clean_word.to_string());
+    
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        
+        // Only process lines that contain our known status brackets
+        if trimmed.starts_with('[') && (trimmed.contains("[ACTIVE]") || trimmed.contains("[INACTIVE]")) {
+            
+            // Split the line by spaces.
+            // Example: ["[ACTIVE]", "exec_block", "(Untrusted", ...]
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            
+            // The module slug is always the second word (index 1)
+            if parts.len() >= 2 {
+                modules.push(parts[1].to_string());
+            }
         }
     }
     
@@ -171,7 +181,7 @@ fn benchmark_startup_and_memory() {
     let prog_json = String::from_utf8_lossy(&prog_output.stdout);
     let map_json = String::from_utf8_lossy(&map_output.stdout);
 
-    let active_modules = get_active_modules(&cli_bin);
+    let active_modules = get_modules_from_cli(&cli_bin);
 
     // Terminate daemon safely
     let _ = child.kill();

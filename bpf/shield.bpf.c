@@ -79,7 +79,7 @@ BOUCLIER_PROTECTED_FILES_MAP;
  * `chmod 777 /etc/bouclier-bleu/config.toml`.
  */
 SEC("lsm/file_open")
-int BPF_PROG(core_shield_file_open, struct file *file) {
+int BPF_PROG(shield_file_open, struct file *file) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}
@@ -158,8 +158,7 @@ int BPF_PROG(core_shield_file_open, struct file *file) {
  * using the `bpf()` syscall. We strictly gate this syscall to root.
  */
 SEC("lsm/bpf")
-int BPF_PROG(core_shield_bpf, int cmd, union bpf_attr *attr,
-			 unsigned int size) {
+int BPF_PROG(shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}
@@ -194,7 +193,7 @@ int BPF_PROG(core_shield_bpf, int cmd, union bpf_attr *attr,
  * directly at the LSM layer.
  */
 SEC("lsm/syslog")
-int BPF_PROG(core_shield_syslog, int type) {
+int BPF_PROG(shield_syslog, int type) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}

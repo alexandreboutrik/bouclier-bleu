@@ -50,7 +50,7 @@ fn main() {
 				"  cargo xtask test component          - Runs all module component tests in VM"
 			);
 			eprintln!("  cargo xtask test integration        - Runs all integration tests in VM");
-			eprintln!("  cargo xtask test benchmark          - Runs all benchmarks in VM (TODO)");
+			eprintln!("  cargo xtask test benchmark          - Runs all benchmarks in VM");
 			eprintln!(
 				"  cargo xtask test <category> [test]  - Runs a specific test file within a category"
 			);
