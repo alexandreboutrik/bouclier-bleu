@@ -181,6 +181,9 @@ function prepare_cargo_release() {
         
         git commit -m "chore(release): prepare v${BB_VERSION}" || 
             { echo "Failed to create release commit. Exiting." ; exit 1 ; }
+
+		git push origin main ||
+			{ echo "Failed to push. Exiting." ; exit 1 ; }
     else
         echo -e "\n➤ All files are already up to date. Skipping cargo update and git commit."
     fi
