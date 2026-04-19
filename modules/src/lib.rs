@@ -24,6 +24,7 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 
 pub mod exec_block;
+pub mod mount_secure;
 pub mod rename_entropy;
 pub mod shield;
 
@@ -147,6 +148,7 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 		Arc::new(exec_block::ExecBlock::new()),
 		Arc::new(rename_entropy::RenameEntropy::new()),
 		Arc::new(shield::Shield::new()),
+		Arc::new(mount_secure::MountSecure::new()),
 		// Future expansions: e.g. Arc::new(ransomware_heur::CanaryDrop::new()),
 	]
 }

@@ -6,3 +6,4 @@
 # (returning 0 in the kernel) until manually enabled via the CLI.
 exec_block = true
 shield = true
+mount_secure = true
