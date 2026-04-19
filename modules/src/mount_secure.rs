@@ -32,9 +32,9 @@ impl MountAlert {
 	pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
 		/*
 		 * Enforce structural boundaries:
-		 * 4 (PID) + 256 (dev_name) + 64 (fs_type) + 4096 (mount_point) = 4420
+		 * 4 (PID) + 256 (dev_name) + 64 (fs_type) + 512 (mount_point) = 836
 		 */
-		if data.len() < 4420 {
+		if data.len() < 836 {
 			return Err("Telemetry payload violates minimum size constraints.");
 		}
 
@@ -43,7 +43,7 @@ impl MountAlert {
 		let pid = reader.read_u32()?;
 		let dev_name = reader.read_string(256)?;
 		let fs_type = reader.read_string(64)?;
-		let mount_point = reader.read_string(4096)?;
+		let mount_point = reader.read_string(512)?;
 
 		Ok(Self {
 			pid,
@@ -59,6 +59,9 @@ impl MountAlert {
  * Strips physical USB drops of their ability to execute binaries or escalate
  * privileges. Hooks into the VFS mount layer to guarantee that removable media
  * strictly enforces MS_NOEXEC, MS_NOSUID, and MS_NODEV flags.
+ * To prevent arbitrary filesystem evasions (e.g., ext4 on USB), this module
+ * enforces checks on both standard hardware prefixes (/dev/sd*, /dev/mmc*)
+ * and universal removable mount paths (/media, /mnt, /run/media).
  */
 define_security_module!(
 	struct: MountSecure,

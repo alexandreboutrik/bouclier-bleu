@@ -43,7 +43,7 @@ struct mount_alert {
 	__u32 pid;
 	char dev_name[256];
 	char fs_type[64];
-	char mount_point[PATH_MAX];
+	char mount_point[512];
 };
 
 BOUCLIER_PATH_BUFFER_MAP;
@@ -59,7 +59,7 @@ int BPF_PROG(mount_secure_sb_mount, const char *dev_name,
 	}
 
 	/*
-	 * Fast-path Deferral:
+	 * Fast-path Deferral
 	 * If the sysadmin or automounter explicitly set all 3 required security
 	 * flags, we allow the mount to proceed without string evaluation.
 	 */
@@ -67,53 +67,68 @@ int BPF_PROG(mount_secure_sb_mount, const char *dev_name,
 		return 0;
 	}
 
-	/*
-	 * eBPF string extraction and stack limitations (512 bytes)
-	 * We carefully extract the filesystem type into a small stack buffer.
-	 */
-	char fs_type[64] = {};
-	bpf_probe_read_kernel_str(fs_type, sizeof(fs_type), type);
-
 	bool is_target = false;
 
-	/* Heuristic 1: Removable Filesystem Types */
-	if (fs_type[0] == 'v' && fs_type[1] == 'f' && fs_type[2] == 'a' &&
-		fs_type[3] == 't')
-		is_target = true;
-	else if (fs_type[0] == 'e' && fs_type[1] == 'x' && fs_type[2] == 'f' &&
-			 fs_type[3] == 'a' && fs_type[4] == 't')
-		is_target = true;
-	else if (fs_type[0] == 'n' && fs_type[1] == 't' && fs_type[2] == 'f' &&
-			 fs_type[3] == 's')
-		is_target = true;
-	else if (fs_type[0] == 'i' && fs_type[1] == 's' && fs_type[2] == 'o' &&
-			 fs_type[3] == '9')
-		is_target = true;
+	/*
+	 * Heuristic 1: Removable Block Device Prefixes
+	 * Instead of relying on easily bypassed filesystem types (e.g., vfat), we
+	 * evaluate the originating block device to reliably identify physical USB
+	 * or SD card mounts (/dev/sd*, /dev/mmcblk*). This neutralizes arbitrary
+	 * filesystem evasions.
+	 */
+	if (dev_name) {
+		char dev_prefix[8] = {};
+		bpf_probe_read_kernel_str(dev_prefix, sizeof(dev_prefix), dev_name);
+
+		if (dev_prefix[0] == '/' && dev_prefix[1] == 'd' &&
+			dev_prefix[2] == 'e' && dev_prefix[3] == 'v' &&
+			dev_prefix[4] == '/') {
+			if (dev_prefix[5] == 's' && dev_prefix[6] == 'd') {
+				is_target = true; // /dev/sd*
+			} else if (dev_prefix[5] == 'm' && dev_prefix[6] == 'm' &&
+					   dev_prefix[7] == 'c') {
+				is_target = true; // /dev/mmc*
+			}
+		}
+	}
 
 	/*
-	 * Heuristic 2: Destination Directory (Path Resolution)
-	 * If the fs_type is generic, we check if it's being mounted into standard
-	 * removable media directories.
+	 * Heuristic 2: Destination Directory (Universal Path Resolution)
+	 * Evaluates the destination directory to catch removable media mounts
+	 * regardless of the source device or filesystem format.
 	 */
 	__u32 key = 0;
-	char *path_buf = NULL;
+	char *path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
 
-	if (!is_target) {
-		path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
-		if (path_buf) {
-			long len = bpf_d_path((struct path *)path, path_buf, PATH_MAX);
-			if (len > 0 && len != -ENAMETOOLONG) {
-				if (path_buf[0] == '/' && path_buf[1] == 'm' &&
-					path_buf[2] == 'e' && path_buf[3] == 'd' &&
-					path_buf[4] == 'i' && path_buf[5] == 'a')
-					is_target = true;
-				else if (path_buf[0] == '/' && path_buf[1] == 'm' &&
-						 path_buf[2] == 'n' && path_buf[3] == 't')
-					is_target = true;
-				else if (path_buf[0] == '/' && path_buf[1] == 'r' &&
-						 path_buf[2] == 'u' && path_buf[3] == 'n' &&
-						 path_buf[4] == '/' && path_buf[5] == 'm')
-					is_target = true;
+	if (path_buf) {
+		long len = bpf_d_path((struct path *)path, path_buf, PATH_MAX);
+
+		/*
+		 * Telemetry Data Leak & Log Spoofing Mitigation
+		 * bpf_d_path can fail (e.g., -ENAMETOOLONG). We must explicitly
+		 * null-terminate the buffer on failure to prevent stale path strings
+		 * from previous CPU executions leaking into the EDR telemetry.
+		 */
+		if (len <= 0) {
+			path_buf[0] = '\0';
+		} else {
+			/*
+			 * Out-of-Bounds Read Prevention
+			 * We strictly enforce length bounds before evaluating array
+			 * indices to prevent garbage memory reads if a user mounts to
+			 * `/m`.
+			 */
+			if (len >= 6 && path_buf[0] == '/' && path_buf[1] == 'm' &&
+				path_buf[2] == 'e' && path_buf[3] == 'd' &&
+				path_buf[4] == 'i' && path_buf[5] == 'a') {
+				is_target = true;
+			} else if (len >= 4 && path_buf[0] == '/' && path_buf[1] == 'm' &&
+					   path_buf[2] == 'n' && path_buf[3] == 't') {
+				is_target = true;
+			} else if (len >= 6 && path_buf[0] == '/' && path_buf[1] == 'r' &&
+					   path_buf[2] == 'u' && path_buf[3] == 'n' &&
+					   path_buf[4] == '/' && path_buf[5] == 'm') {
+				is_target = true;
 			}
 		}
 	}
@@ -126,8 +141,18 @@ int BPF_PROG(mount_secure_sb_mount, const char *dev_name,
 			BPF_SAFE_MEMSET(event, sizeof(*event));
 			event->pid = bpf_get_current_pid_tgid() >> 32;
 
-			bpf_probe_read_kernel_str(event->fs_type, sizeof(event->fs_type),
-									  fs_type);
+			/*
+			 * Invalid BPF Helper Memory Read Fix
+			 * Read directly from the kernel-space 'type' pointer rather than
+			 * copying from a local eBPF stack variable to prevent
+			 * verifier/JIT issues.
+			 */
+			if (type) {
+				bpf_probe_read_kernel_str(event->fs_type,
+										  sizeof(event->fs_type), type);
+			} else {
+				event->fs_type[0] = '\0';
+			}
 
 			if (dev_name) {
 				bpf_probe_read_kernel_str(event->dev_name,
@@ -138,18 +163,7 @@ int BPF_PROG(mount_secure_sb_mount, const char *dev_name,
 				event->dev_name[2] = 'A';
 			}
 
-			/*
-			 * If we haven't already resolved the path in Heuristic 2, do it
-			 * now for telemetry.
-			 */
-			if (!path_buf) {
-				path_buf = bpf_map_lookup_elem(&path_buffer_map, &key);
-				if (path_buf) {
-					bpf_d_path((struct path *)path, path_buf, PATH_MAX);
-				}
-			}
-
-			if (path_buf) {
+			if (path_buf && path_buf[0] != '\0') {
 				bpf_probe_read_kernel_str(event->mount_point,
 										  sizeof(event->mount_point), path_buf);
 			}
