@@ -79,7 +79,7 @@ function provision_vm() {
 
 	# Inject dependencies required for eBPF object compilation (libelf, zlib)
 	# and Rust toolchains
-	incus exec "${BUILDER_VM}" -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang llvm pkg-config curl linux-tools-common linux-tools-generic libelf-dev zlib1g-dev"
+	incus exec "${BUILDER_VM}" -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang llvm pkg-config curl linux-tools-common linux-tools-generic libelf-dev zlib1g-dev attr"
 	incus exec "${BUILDER_VM}" -- bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
 
 	# Flush VFS cache to physical disk to prevent corruption during graceful

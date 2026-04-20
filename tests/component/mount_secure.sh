@@ -125,21 +125,19 @@ function verify_insecure_fstype_mount() {
 	echo "  [*] Validating Insecure Filesystem Type Mount (vfat) (Expected: BLOCK)..."
 
 	set +e
-	# Mount into an unmonitored directory (/tmp) but use a monitored FS type
-	# (vfat). The LSM runs before the VFS validates the backing block device,
-	# so it will  block it with EPERM before failing due to a missing real
-	# disk.
-	mount -t vfat none "${TEST_SAFE_DIR}" >/dev/null 2>&1
+	# Spoof a USB block device prefix. The LSM hook catches this before the
+	# VFS realizes the backing device doesn't actually exist.
+	mount -t tmpfs /dev/sda1 "${TEST_SAFE_DIR}" >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
 	if [[ "${exit_code}" -eq 0 ]]; then
-		echo "[-] Assertion failed: Insecure vfat mount was permitted!"
+		echo "[-] Assertion failed: Insecure block device mount was permitted!"
 		umount "${TEST_SAFE_DIR}" 2>/dev/null || true
 		exit 1
 	fi
 
-	echo "  [+] Insecure filesystem type mount successfully vetoed (-EPERM)."
+	echo "  [+] Insecure block device mount successfully vetoed (-EPERM)."
 }
 
 function verify_ipc_detachment() {

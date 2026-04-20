@@ -27,6 +27,7 @@ pub mod exec_block;
 pub mod mount_secure;
 pub mod rename_entropy;
 pub mod shield;
+pub mod strict_wx;
 
 /// BPF Map Dependency Injection Contract
 ///
@@ -149,6 +150,7 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 		Arc::new(rename_entropy::RenameEntropy::new()),
 		Arc::new(shield::Shield::new()),
 		Arc::new(mount_secure::MountSecure::new()),
+		Arc::new(strict_wx::StrictWx::new()),
 		// Future expansions: e.g. Arc::new(ransomware_heur::CanaryDrop::new()),
 	]
 }
