@@ -48,7 +48,11 @@ pkgs.mkShell {
     echo "-I${pkgs.libbpf}/include" >> compile_flags.txt
     echo "-I${pkgs.linuxHeaders}/include" >> compile_flags.txt
 
-    echo "🛡️ Welcome to the bouclier-bleu NixOS dev shell!"
+	# Bypass the Nix cc-wrapper for direct eBPF compilation
+    export BPF_CLANG="${pkgs.llvmPackages.clang-unwrapped}/bin/clang"
+    export BPF_CFLAGS="-I${pkgs.libbpf}/include -I${pkgs.linuxHeaders}/include"
+
+    echo "* Welcome to the bouclier-bleu NixOS dev shell!"
     echo "------------------------------------------------"
     echo "Rust version:  $(rustc --version)"
     echo "Clang version: $(clang --version | head -n 1)"

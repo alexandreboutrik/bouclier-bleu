@@ -1,0 +1,42 @@
+name: CO-RE Compliance Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-core:
+    name: Verify eBPF CO-RE
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install LLVM, Clang, and BPF tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            linux-tools-common \
+            linux-tools-generic \
+            linux-tools-$(uname -r)
+
+      - name: Generate vmlinux.h
+        run: |
+          mkdir -p bpf/include
+          bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/include/vmlinux.h
+
+      - name: Run CO-RE Verification Pipeline
+        run: ./scripts/co-re.sh
