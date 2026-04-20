@@ -5,7 +5,7 @@
 <h1 align="center">Bouclier Bleu</h1>
 
 <div align="center">
-<img src="https://img.shields.io/badge/version-v0.3.1--alpha-blue">
+<img src="https://img.shields.io/badge/version-v0.4.0--alpha-blue">
 <img src="https://img.shields.io/badge/license-GPL--2.0--only-424242">
 <img src="https://img.shields.io/badge/license-Apache--2.0-a8afb3">
 </div>
@@ -49,9 +49,9 @@ The NGAV/EDR currently has the following defense heuristics:
 
 * **Removable Media Neutralizer (`mount_secure`)** : Stripping physical USB drops of their ability to execute binaries or escalate privileges. It will hook `lsm/sb_mount` to guarantee that any removable media mount operation strictly enforces `MS_NOEXEC`, `MS_NOSUID`, and `MS_NODEV` flags, acting as a fail-safe against unsafe sysadmin defaults.
 
-`Bouclier Bleu` is actively being developed. Upcoming modules (TODO SOON) include:
-
 * **Strict Write XOR Execute (`strict_wx`)** : [OPT-IN] Mitigating shellcode injection and in-memory staging. It will check for a specific extended attribute (e.g. `user.bouclier.strict_wx`) on compiled binaries, mercilessly blocking any `mmap` or `mprotect` calls requesting `PROT_WRITE | PROT_EXEC` memory allocations.
+
+`Bouclier Bleu` is actively being developed. Upcoming modules (TODO SOON) include:
 
 * **Process Injection Prevention (`ptrace_access_check` / `ptrace_traceme`):** Monitoring and restricting `ptrace` capabilities to block cross-process memory tampering, hollow process injection, and credential dumping.
 
