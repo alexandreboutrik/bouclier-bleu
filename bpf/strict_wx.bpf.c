@@ -95,7 +95,7 @@ static __always_inline int enforce_strict_wx(unsigned long prot,
 		return 0;
 	}
 
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct task_struct *task = bpf_get_current_task_btf();
 	struct mm_struct *mm = BPF_CORE_READ(task, mm);
 	if (!mm)
 		return 0;
@@ -150,6 +150,8 @@ static __always_inline int enforce_strict_wx(unsigned long prot,
 			 */
 			__builtin_strncpy(event->syscall, syscall_name,
 							  sizeof(event->syscall));
+
+			event->syscall[sizeof(event->syscall) - 1] = '\0';
 
 			bpf_ringbuf_submit(event, 0);
 		}

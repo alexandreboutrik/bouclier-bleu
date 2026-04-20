@@ -108,9 +108,9 @@ define_security_module!(
 		 * or mapped in user-space.
 		 */
 		for path in target_files {
-			if let Ok(metadata) = std::fs::metadata(path) {
-				let key_bytes = crate::generate_hardware_key(&metadata);
-				let _ = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY);
+			if let Ok(key_bytes) = crate::get_secure_hardware_key(path) {
+				bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+					.map_err(|e| format!("CRITICAL: Map update failed for {}: {}", path, e))?;
 			}
 		}
 		Ok(())

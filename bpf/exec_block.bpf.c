@@ -123,7 +123,14 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		struct shmem_inode_info *info =
 			(struct shmem_inode_info *)((void *)f_inode - offset);
 
-		int seals = BPF_CORE_READ(info, seals);
+		/*
+		 * If the CO-RE read fails entirely, default to allowing execution to
+		 * prevent catastrophic false-positives on unsupported kernels.
+		 */
+		int seals = 0;
+		if (bpf_core_read(&seals, sizeof(seals), &info->seals)) {
+			return 0;
+		}
 
 		if (!(seals & F_SEAL_WRITE)) {
 			bpf_printk("Bouclier Bleu [BLOCK]: Unsealed fileless execution "

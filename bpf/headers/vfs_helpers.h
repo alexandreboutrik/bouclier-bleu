@@ -66,7 +66,7 @@ struct dir_id {
 		__uint(type, BPF_MAP_TYPE_HASH);                                       \
 		__type(key, struct dir_id);                                            \
 		__type(value, __u8);                                                   \
-		__uint(max_entries, 2);                                                \
+		__uint(max_entries, 16);                                               \
 	} protected_files SEC(".maps");
 
 /**

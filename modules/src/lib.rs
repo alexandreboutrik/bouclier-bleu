@@ -19,8 +19,10 @@
 //! This module provides the `SecurityModule` contract and the IoC registry,
 //! decoupling specific defensive heuristics from the core eBPF routing engine.
 
-use std::fs::Metadata;
+use rustix::fs::{CWD, Mode, OFlags, openat};
+use std::fs::{File, Metadata};
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::sync::Arc;
 
 pub mod exec_block;
@@ -299,4 +301,29 @@ pub fn generate_hardware_key(metadata: &Metadata) -> [u8; 16] {
 	// Bytes 12..16 inherently remain 0 as padding for C-struct alignment
 
 	key_bytes
+}
+
+/// Securely extracts a hardware key, neutralizing TOCTOU symlink races.
+///
+/// Opens a file descriptor enforcing `O_NOFOLLOW` to prevent symlink swapping
+/// during path resolution, then extracts the hardware-backed Inode and Device
+/// ID.
+pub fn get_secure_hardware_key<P: AsRef<Path>>(path: P) -> std::io::Result<[u8; 16]> {
+	/*
+	 * Open the file descriptor safely
+	 * OFlags::NOFOLLOW prevents symlink evaluation. OFlags::CLOEXEC prevents
+	 * file descriptor leaks to child processes.
+	 */
+	let fd = openat(
+		CWD,
+		path.as_ref(),
+		OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::PATH | OFlags::CLOEXEC,
+		Mode::empty(),
+	)
+	.map_err(Into::<std::io::Error>::into)?;
+
+	let file = File::from(fd);
+
+	let metadata = file.metadata()?;
+	Ok(generate_hardware_key(&metadata))
 }

@@ -118,10 +118,10 @@ define_security_module!(
 			for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
 				// System-level Inode Extraction
 				if entry.file_type().is_dir() {
-					if let Ok(metadata) = entry.metadata() {
-						let key_bytes = crate::generate_hardware_key(&metadata);
-						let _ = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY);
-					}
+					if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
+			bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+				.map_err(|e| format!("CRITICAL: Map update failed for {}: {}", entry.path().display(), e))?;
+		}
 				}
 			}
 		}

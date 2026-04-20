@@ -107,15 +107,13 @@ fn neutralize_threat_tree(target_ppid: u32) {
 	let target = Pid::from_u32(target_ppid);
 
 	/*
-	 * By killing the parent first, we immediately break the control loop,
-	 * preventing the threat actor from dynamically spawning new worker threads
-	 * while we traverse the process list.
+	 * Eradicate Sibling/Child Workers FIRST
+	 * On Linux, when a parent process dies, its orphaned children are
+	 * immediately reparented to PID 1 (init/systemd) or a designated
+	 * subreaper. Because the loop looks for processes where process.parent()
+	 * == target, the reparented children would no longer match this condition
+	 * if we kill the parent orchestrator first.
 	 */
-	if let Some(parent) = sys.process(target) {
-		parent.kill_with(Signal::Kill);
-	}
-
-	// Eradicate Sibling/Child Workers
 	for (pid, process) in sys.processes() {
 		if let Some(parent_pid) = process.parent() {
 			if parent_pid == target {
@@ -126,6 +124,10 @@ fn neutralize_threat_tree(target_ppid: u32) {
 				);
 			}
 		}
+	}
+
+	if let Some(parent) = sys.process(target) {
+		parent.kill_with(Signal::Kill);
 	}
 }
 
@@ -145,7 +147,14 @@ define_security_module!(
 	slug: "rename_entropy",
 	parser: RenameAlert::try_from_bytes,
 	handler: |alert: RenameAlert| {
-		let mut tracker = get_tracker().lock().unwrap();
+		let mut tracker = match get_tracker().lock() {
+			Ok(guard) => guard,
+			Err(poisoned) => {
+				eprintln!("Bouclier Bleu [Warning]: Strike tracker mutex was poisoned. Recovering state.");
+		poisoned.into_inner()
+			}
+		};
+
 		let now = Instant::now();
 
 		/*
@@ -239,14 +248,13 @@ define_security_module!(
 
 		/*
 		 * HARDWARE-BACKED DIRECTORY WATCHLIST INITIALIZATION
-		 * Threat Model: Advanced adversaries routinely use mount namespaces
-		 * (`unshare -m`) or bind-mounts to obfuscate paths and bypass
-		 * string-matching security heuristics. To neutralize this, the
-		 * userland daemon resolves the exact physical `inode` of target
-		 * directories at boot. These hardware-level identifiers are passed to
-		 * the kernel via the `protected_dirs` eBPF Map. The kernel hook then
-		 * performs validation against the inode that is entirely immune to
-		 * namespace manipulation.
+		 * Advanced adversaries routinely use mount namespaces (`unshare -m`)
+		 * or bind-mounts to obfuscate paths and bypass string-matching
+		 * security heuristics. To neutralize this, the userland daemon
+		 * resolves the exact physical `inode` of target directories at boot.
+		 * These hardware-level identifiers are passed to the kernel via the
+		 * `protected_dirs` eBPF Map. The kernel hook then performs validation
+		 * against the inode that is entirely immune to namespace manipulation.
 		 */
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Recursively indexing {}...", path);
@@ -277,11 +285,10 @@ define_security_module!(
 				// destination directory's inode structure, not the individual
 				// file itself.
 				if entry.file_type().is_dir() {
-					if let Ok(metadata) = entry.metadata() {
-						let key_bytes = crate::generate_hardware_key(&metadata);
-						bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-							.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
-					}
+					if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
+		bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+			.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
+	}
 				}
 			}
 
