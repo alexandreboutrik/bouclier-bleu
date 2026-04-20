@@ -104,6 +104,26 @@ function print_help() {
 }
 
 function init_env() {
+	local spawned_new_agent=0
+
+	if [ -z "${SSH_AUTH_SOCK}" ]; then
+		echo "➤ Starting temporary SSH agent..."
+		eval "$(ssh-agent -s)" >/dev/null
+		spawned_new_agent=1
+	fi
+
+	if ! ssh-add -l | grep -q "id_ed25519"; then
+		echo "➤ Loading SSH key..."
+		ssh-add ~/.ssh/id_ed25519
+	fi
+
+	# Only kill the agent on EXIT if THIS script started it
+	if [ "$spawned_new_agent" -eq 1 ]; then
+		trap "echo '➤ Cleaning up temporary SSH agent...'; ssh-agent -k > /dev/null" EXIT
+	fi
+
+	trap "echo '➤ Cleaning up SSH agent...'; ssh-agent -k > /dev/null" EXIT
+
 	if [ -z "${BB_VERSION}" ]; then
 		echo "Error: Version not specified. Use -v <version>. Exiting."
 		echo
@@ -116,12 +136,15 @@ function init_env() {
 	echo "Starting release process for ${APP_NAME} v${BB_VERSION}..."
 	echo "Cleaning previous builds..."
 
-	if [ -d "${DIST_DIR}" ]; then
-		sudo rm -rf "${DIST_DIR}" ||
-			{
+	# Only delete DIST_DIR if we are actually building new packages
+	if [[ "${BB_BUILD_DEB}" == "1" || "${BB_BUILD_RPM}" == "1" ]]; then
+		echo "Cleaning previous builds for new package generation..."
+		if [ -d "${DIST_DIR}" ]; then
+			sudo rm -rf "${DIST_DIR}" || {
 				echo "Failed to remove old dist directory. Exiting."
 				exit 1
 			}
+		fi
 	fi
 
 	mkdir -p "${DIST_DIR}" ||
@@ -283,26 +306,46 @@ function build_rpm() {
 function create_github_release() {
 	if [ "${BB_CREATE_GH_RELEASE}" != "1" ]; then return; fi
 
+	# Check if any other "action" flags were provided
+	local TOTAL_ACTIONS=$((BB_BUILD_DEB + BB_BUILD_RPM + BB_UPDATE_AUR + BB_UPDATE_GENTOO))
+	local ONLY_GH=0
+	if [ "${TOTAL_ACTIONS}" -eq 0 ]; then
+		ONLY_GH=1
+	fi
+
 	echo -e "\n➤ Tagging and creating GitHub Release..."
 
-	git tag "v${BB_VERSION}" ||
-		{
-			echo "Failed to create git tag locally. Exiting."
+	# Handle Local Tag
+	if ! git tag "v${BB_VERSION}" 2>/dev/null; then
+		if [ "${ONLY_GH}" -eq 1 ]; then
+			echo "[INFO] Local tag v${BB_VERSION} already exists. Continuing because only -gh was requested."
+		else
+			echo "[ERROR] Local tag v${BB_VERSION} already exists or failed. Exiting to prevent inconsistent state."
 			exit 1
-		}
-	git push origin "v${BB_VERSION}" ||
-		{
-			echo "Failed to push git tag to origin. Exiting."
-			exit 1
-		}
+		fi
+	fi
 
-	gh release create "v${BB_VERSION}" "${DIST_DIR}"/* \
-		--title "Release v${BB_VERSION}" \
-		--generate-notes ||
-		{
-			echo "Failed to create GitHub release via gh CLI. Exiting."
+	# Handle Remote Tag Push
+	if ! git push origin "v${BB_VERSION}" 2>/dev/null; then
+		if [ "${ONLY_GH}" -eq 1 ]; then
+			echo "[INFO] Remote tag v${BB_VERSION} already exists on origin. Continuing..."
+		else
+			echo "[ERROR] Failed to push git tag to origin. Exiting."
+			exit 1
+		fi
+	fi
+
+	# Create Release (checks if release already exists to avoid gh CLI error)
+	if gh release view "v${BB_VERSION}" >/dev/null 2>&1; then
+		echo "[INFO] GitHub Release v${BB_VERSION} already exists. Skipping creation."
+	else
+		gh release create "v${BB_VERSION}" "${DIST_DIR}"/* \
+			--title "Release v${BB_VERSION}" \
+			--generate-notes || {
+			echo "Failed to create GitHub release. Exiting."
 			exit 1
 		}
+	fi
 }
 
 function calculate_sha() {
