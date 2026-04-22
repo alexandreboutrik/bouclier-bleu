@@ -310,24 +310,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
  * currently protected directory, we automatically add the new child's inode to
  * the protected_dirs map.
  */
-SEC("fexit/vfs_mkdir")
-int BPF_PROG(rename_entropy_vfs_mkdir_exit, struct mnt_idmap *idmap,
-			 struct inode *dir, struct dentry *dentry, umode_t mode, int ret) {
-	if (ret != 0 || !is_module_active(&state_map)) {
-		return 0;
-	}
-
-	struct dir_id parent_id = {};
-	struct dir_id child_id = {};
-
-	extract_dir_id_from_inode(dir, &parent_id);
-	extract_dir_id_from_dentry(dentry, &child_id);
-
-	inherit_protection(&protected_dirs, &parent_id, &child_id,
-					   "rename_entropy");
-
-	return 0;
-}
+BOUCLIER_GENERATE_MKDIR_HOOKS(rename_entropy, "rename_entropy")
 
 /*
  * Dynamic Watchlist Inheritance (rename)
@@ -338,20 +321,4 @@ int BPF_PROG(rename_entropy_vfs_mkdir_exit, struct mnt_idmap *idmap,
  * If an unprotected directory is moved into a currently protected directory,
  * it immediately inherits the parent's protection status.
  */
-SEC("fexit/vfs_rename")
-int BPF_PROG(rename_entropy_vfs_rename_exit, struct renamedata *rd, int ret) {
-	if (ret != 0 || !is_module_active(&state_map)) {
-		return 0;
-	}
-
-	struct dir_id target_parent_id = {};
-	struct dir_id moved_id = {};
-
-	extract_dir_id_from_inode(BPF_CORE_READ(rd, new_dir), &target_parent_id);
-	extract_dir_id_from_dentry(BPF_CORE_READ(rd, old_dentry), &moved_id);
-
-	inherit_protection(&protected_dirs, &target_parent_id, &moved_id,
-					   "rename_entropy");
-
-	return 0;
-}
+BOUCLIER_GENERATE_RENAME_HOOK(rename_entropy, "rename_entropy")

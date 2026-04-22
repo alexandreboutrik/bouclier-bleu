@@ -195,23 +195,7 @@ block_exec:
  * the protected_dirs map. This ensures zero-day coverage of nested staging
  * environments created post-boot.
  */
-SEC("fexit/vfs_mkdir")
-int BPF_PROG(exec_block_vfs_mkdir_exit, struct mnt_idmap *idmap,
-			 struct inode *dir, struct dentry *dentry, umode_t mode, int ret) {
-	if (ret != 0 || !is_module_active(&state_map)) {
-		return 0;
-	}
-
-	struct dir_id parent_id = {};
-	struct dir_id child_id = {};
-
-	extract_dir_id_from_inode(dir, &parent_id);
-	extract_dir_id_from_dentry(dentry, &child_id);
-
-	inherit_protection(&protected_dirs, &parent_id, &child_id, "exec_block");
-
-	return 0;
-}
+BOUCLIER_GENERATE_MKDIR_HOOKS(exec_block, "exec_block")
 
 /*
  * Dynamic Watchlist Inheritance (Rename)
@@ -224,20 +208,4 @@ int BPF_PROG(exec_block_vfs_mkdir_exit, struct mnt_idmap *idmap,
  * immediately inherits the parent's protection status to close the evasion
  * loophole.
  */
-SEC("fexit/vfs_rename")
-int BPF_PROG(exec_block_vfs_rename_exit, struct renamedata *rd, int ret) {
-	if (ret != 0 || !is_module_active(&state_map)) {
-		return 0;
-	}
-
-	struct dir_id target_parent_id = {};
-	struct dir_id moved_id = {};
-
-	extract_dir_id_from_inode(BPF_CORE_READ(rd, new_dir), &target_parent_id);
-	extract_dir_id_from_dentry(BPF_CORE_READ(rd, old_dentry), &moved_id);
-
-	inherit_protection(&protected_dirs, &target_parent_id, &moved_id,
-					   "exec_block");
-
-	return 0;
-}
+BOUCLIER_GENERATE_RENAME_HOOK(exec_block, "exec_block")

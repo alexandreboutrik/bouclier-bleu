@@ -133,4 +133,124 @@ static __always_inline void inherit_protection(void *map,
 	}
 }
 
+/**
+ * struct renamedata___new - CO-RE Shadow Struct for 2025 VFS Refactor
+ * @old_parent: The dentry of the source directory.
+ * @old_dentry: The dentry of the source file/directory being moved.
+ * @new_parent: The dentry of the target directory.
+ * @new_dentry: The dentry of the target destination.
+ *
+ * In 2025, the kernel VFS layer was heavily refactored. The `new_dir` and
+ * `old_dir` fields (which were `struct inode *`) were replaced with
+ * `new_parent` and `old_parent` (which are `struct dentry *`). The
+ * preserve_access_index attribute instructs the eBPF verifier to dynamically
+ * calculate memory offsets based on the target kernel's BTF, preventing fatal
+ * relocation errors on newer Azure/mainline kernels.
+ */
+struct renamedata___new {
+	struct dentry *old_parent;
+	struct dentry *old_dentry;
+	struct dentry *new_parent;
+	struct dentry *new_dentry;
+} __attribute__((preserve_access_index));
+
+/**
+ * struct renamedata___old - CO-RE Shadow Struct for Pre-2025 VFS
+ *
+ * Provides the legacy inode-based layout. We must cast to this shadow struct
+ * in our BPF_CORE_READ calls; otherwise, Clang will throw a compilation error
+ * if the host's dynamically generated vmlinux.h reflects a modern kernel where
+ * these fields no longer exist.
+ */
+struct renamedata___old {
+	struct inode *old_dir;
+	struct dentry *old_dentry;
+	struct inode *new_dir;
+	struct dentry *new_dentry;
+} __attribute__((preserve_access_index));
+
+/**
+ * BOUCLIER_GENERATE_MKDIR_HOOKS() - Multi-Version VFS Mkdir Watchlist
+ * Inheritance
+ * @prefix: The BPF program name prefix (e.g., exec_block).
+ * @mod_name: String literal for BPF printk error context.
+ *
+ * The 2025 Linux VFS refactor altered the return type of `vfs_mkdir` from an
+ * integer (error code) to a `struct dentry *`. Because eBPF `fexit` hooks
+ * enforce strict BTF (BPF Type Format) signature validation at load time, a
+ * single hook cannot support both kernel versions.
+ *
+ * This macro generates two distinct fexit hooks. The Rust userland daemon must
+ * probe the kernel's BTF and dynamically disable `autoload` on the incompatible
+ * version prior to loading to prevent libbpf rejection.
+ */
+/**
+ * BOUCLIER_GENERATE_MKDIR_HOOKS() - Multi-Version VFS Mkdir Watchlist
+ * Inheritance
+ */
+#define BOUCLIER_GENERATE_MKDIR_HOOKS(prefix, mod_name)                        \
+	/* Pre-2025 VFS Signature (Returns int) */                                 \
+	SEC("?fexit/vfs_mkdir")                                                    \
+	int BPF_PROG(prefix##_vfs_mkdir_exit_old, struct mnt_idmap *idmap,         \
+				 struct inode *dir, struct dentry *dentry, umode_t mode,       \
+				 int ret) {                                                    \
+		if (ret != 0 || !is_module_active(&state_map)) {                       \
+			return 0;                                                          \
+		}                                                                      \
+		struct dir_id parent_id = {};                                          \
+		struct dir_id child_id = {};                                           \
+		extract_dir_id_from_inode(dir, &parent_id);                            \
+		extract_dir_id_from_dentry(dentry, &child_id);                         \
+		inherit_protection(&protected_dirs, &parent_id, &child_id, mod_name);  \
+		return 0;                                                              \
+	}                                                                          \
+                                                                               \
+	/* Post-2025 VFS Signature (Returns struct dentry *) */                    \
+	SEC("?fexit/vfs_mkdir")                                                    \
+	int BPF_PROG(prefix##_vfs_mkdir_exit_new, struct mnt_idmap *idmap,         \
+				 struct inode *dir, struct dentry *dentry, umode_t mode,       \
+				 struct dentry *ret) {                                         \
+		/* IS_ERR: Validate if pointer value is in the -4095 to -1 range */    \
+		if ((unsigned long)ret >= (unsigned long)-4095 ||                      \
+			!is_module_active(&state_map)) {                                   \
+			return 0;                                                          \
+		}                                                                      \
+		struct dir_id parent_id = {};                                          \
+		struct dir_id child_id = {};                                           \
+		extract_dir_id_from_inode(dir, &parent_id);                            \
+		extract_dir_id_from_dentry(dentry, &child_id);                         \
+		inherit_protection(&protected_dirs, &parent_id, &child_id, mod_name);  \
+		return 0;                                                              \
+	}
+
+/**
+ * BOUCLIER_GENERATE_RENAME_HOOK() - Multi-Version VFS Rename Inheritance
+ * @prefix: The BPF program name prefix (e.g., exec_block).
+ * @mod_name: String literal for BPF printk error context.
+ */
+#define BOUCLIER_GENERATE_RENAME_HOOK(prefix, mod_name)                        \
+	SEC("fexit/vfs_rename")                                                    \
+	int BPF_PROG(prefix##_vfs_rename_exit, struct renamedata *rd, int ret) {   \
+		if (ret != 0 || !is_module_active(&state_map)) {                       \
+			return 0;                                                          \
+		}                                                                      \
+		struct dir_id target_parent_id = {};                                   \
+		struct dir_id moved_id = {};                                           \
+		/* Dynamic CO-RE Layout Validation */                                  \
+		if (bpf_core_field_exists(                                             \
+				((struct renamedata___new *)rd)->new_parent)) {                \
+			struct dentry *new_parent =                                        \
+				BPF_CORE_READ((struct renamedata___new *)rd, new_parent);      \
+			extract_dir_id_from_dentry(new_parent, &target_parent_id);         \
+		} else {                                                               \
+			extract_dir_id_from_inode(                                         \
+				BPF_CORE_READ((struct renamedata___old *)rd, new_dir),         \
+				&target_parent_id);                                            \
+		}                                                                      \
+		extract_dir_id_from_dentry(BPF_CORE_READ(rd, old_dentry), &moved_id);  \
+		inherit_protection(&protected_dirs, &target_parent_id, &moved_id,      \
+						   mod_name);                                          \
+		return 0;                                                              \
+	}
+
 #endif /* __VFS_HELPERS_H */

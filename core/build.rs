@@ -172,6 +172,14 @@ fn main() {
                             }
                         }
 
+                        /*
+                         * DYNAMIC AUTOLOAD INTERCEPTION
+                         * Yield control back to the userland daemon to toggle
+                         * `autoload` on incompatible kernel hooks before we
+                         * ask libbpf to lock them into the verifier.
+                         */
+                        pre_load_hook(&mut open_skel.obj)?;
+
                         let mut skel = open_skel.load().context(concat!("Failed to load ", stringify!(#mod_ident)))?;
                         skel.attach().context(concat!("Failed to attach ", stringify!(#mod_ident)))?;
                         Ok(Box::new(skel))
@@ -245,7 +253,17 @@ fn main() {
 		}
 
 		/// Dispatches module loading logic dynamically based on string names.
-		pub fn load_module(name: &str, capacities: &std::collections::HashMap<String, u32>) -> Result<Box<dyn Any>> {
+		/// Accepts a `pre_load_hook` closure to allow the caller to modify
+		/// the OpenObject (e.g., toggling program autoload) before kernel
+		/// loading.
+		pub fn load_module<F>(
+			name: &str,
+			capacities: &std::collections::HashMap<String, u32>,
+			mut pre_load_hook: F
+		) -> Result<Box<dyn Any>>
+		where
+			F: FnMut(&mut libbpf_rs::OpenObject) -> Result<()>
+		{
 			match name {
 				#(#load_arms)*
 				_ => bail!("eBPF module '{}' not found.", name),

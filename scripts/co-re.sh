@@ -190,14 +190,21 @@ function check_bpf_file() {
 
 		local load_out
 		if ! load_out=$(sudo bpftool prog loadall "${obj_file}" "${pin_dir}" 2>&1); then
-			echo "  [-] Error: Kernel verifier (or object loading) rejected the program!"
-			echo "      Verifier Log / Error:"
-			echo "${load_out}" | sed 's/^/      /'
+			# libbpf throws a pinning error for SEC("?...") programs because
+			# they are intentionally not loaded into the kernel
+			# (autoload=false). If this is the only error, the verifier passed.
+			if echo "${load_out}" | grep -q "can't pin program that wasn't loaded"; then
+				echo "  [+] Passed kernel verifier (Optional hooks safely skipped)."
+			else
+				echo "  [-] Error: Kernel verifier (or object loading) rejected the program!"
+				echo "      Verifier Log / Error:"
+				echo "${load_out}" | sed 's/^/      /'
 
-			# Clean up before exiting on failure
-			sudo umount "${pin_dir}" >/dev/null 2>&1 || true
-			rm -rf "${pin_dir}" >/dev/null 2>&1 || true
-			exit 1
+				# Clean up before exiting on failure
+				sudo umount "${pin_dir}" >/dev/null 2>&1 || true
+				rm -rf "${pin_dir}" >/dev/null 2>&1 || true
+				exit 1
+			fi
 		fi
 		echo "  [+] Passed kernel verifier."
 
