@@ -28,74 +28,81 @@ const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 /// during integration testing. Guarantees process termination and resource
 /// cleanup even upon test assertion panics.
 struct DaemonGuard {
-    process: Child,
+	process: Child,
 }
 
 impl DaemonGuard {
-    fn spawn() -> Self {
-        // Purge dangling socket descriptors from prior ungraceful terminations
-        // to prevent AddressInUse errors.
-        let _ = std::fs::remove_file(SOCKET_PATH);
+	fn spawn() -> Self {
+		// Purge dangling socket descriptors from prior ungraceful terminations
+		// to prevent AddressInUse errors.
+		let _ = std::fs::remove_file(SOCKET_PATH);
 
-        let core_bin = env!("CARGO_BIN_EXE_core");
+		let core_bin = env!("CARGO_BIN_EXE_core");
 
-        let process = Command::new(core_bin)
-            .spawn()
-            .expect("Failed to execute core daemon binary. Verify build prerequisites.");
+		let process = Command::new(core_bin)
+			.spawn()
+			.expect("Failed to execute core daemon binary. Verify build prerequisites.");
 
-        let guard = Self { process };
-        guard.await_socket_readiness();
-        guard
-    }
+		let guard = Self { process };
+		guard.await_socket_readiness();
+		guard
+	}
 
-    /// Actively polls the VFS layer to resolve race conditions between the 
-    /// daemon's initialization phase and the test runner's execution loop.
-    fn await_socket_readiness(&self) {
-        let start = Instant::now();
-        let timeout = Duration::from_secs(5);
+	/// Actively polls the VFS layer to resolve race conditions between the
+	/// daemon's initialization phase and the test runner's execution loop.
+	fn await_socket_readiness(&self) {
+		let start = Instant::now();
+		let timeout = Duration::from_secs(5);
 
-        while start.elapsed() < timeout {
-            if Path::new(SOCKET_PATH).exists() {
-                if UnixStream::connect(SOCKET_PATH).is_ok() {
-                    return;
-                }
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        panic!("Core daemon failed to bind IPC socket at {} within timeout limit.", SOCKET_PATH);
-    }
+		while start.elapsed() < timeout {
+			if Path::new(SOCKET_PATH).exists() {
+				if UnixStream::connect(SOCKET_PATH).is_ok() {
+					return;
+				}
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+		panic!(
+			"Core daemon failed to bind IPC socket at {} within timeout limit.",
+			SOCKET_PATH
+		);
+	}
 }
 
 impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
-    }
+	fn drop(&mut self) {
+		let _ = self.process.kill();
+		let _ = self.process.wait();
+	}
 }
 
 #[test]
 fn test_ipc_disable_command() {
-    let _daemon = DaemonGuard::spawn();
+	let _daemon = DaemonGuard::spawn();
 
-    let mut stream = UnixStream::connect(SOCKET_PATH)
-        .expect("Failed to establish IPC channel to core daemon.");
+	let mut stream =
+		UnixStream::connect(SOCKET_PATH).expect("Failed to establish IPC channel to core daemon.");
 
-    /*
-     * Dispatch state mutation RPC directly to the control plane, intentionally
-     * circumventing the CLI abstraction layer to test the socket's raw payload
-     * parsing.
-     */
-    stream.write_all(b"DISABLE exec_block")
-        .expect("Failed to transmit IPC payload.");
+	/*
+	 * Dispatch state mutation RPC directly to the control plane, intentionally
+	 * circumventing the CLI abstraction layer to test the socket's raw payload
+	 * parsing.
+	 */
+	stream
+		.write_all(b"DISABLE exec_block")
+		.expect("Failed to transmit IPC payload.");
 
-    let _ = stream.shutdown(Shutdown::Write);
+	let _ = stream.shutdown(Shutdown::Write);
 
-    let mut response = String::new();
-    stream.read_to_string(&mut response).expect("Failed to read IPC response stream.");
+	let mut response = String::new();
+	stream
+		.read_to_string(&mut response)
+		.expect("Failed to read IPC response stream.");
 
-    assert!(
-        response.contains("SUCCESS: Defense module 'exec_block' DISABLED via state synchronization"),
-        "Unexpected IPC response payload: {}",
-        response
-    );
+	assert!(
+		response
+			.contains("SUCCESS: Defense module 'exec_block' DISABLED via state synchronization"),
+		"Unexpected IPC response payload: {}",
+		response
+	);
 }

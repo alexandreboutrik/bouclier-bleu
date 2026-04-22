@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{BpfReader, define_security_module};
+use crate::{define_security_module, BpfReader};
 
 /// Telemetry payload yielded by the `core_shield` BPF hooks.
 ///

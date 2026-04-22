@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 

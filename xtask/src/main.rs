@@ -17,7 +17,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, exit};
+use std::process::{exit, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 

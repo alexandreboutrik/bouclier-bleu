@@ -28,108 +28,126 @@ use std::time::{Duration, Instant};
 const SOCKET_PATH: &str = "/var/run/bouclier-bleu/control.sock";
 
 struct DaemonGuard {
-    process: Child,
+	process: Child,
 }
 
 impl DaemonGuard {
-    fn spawn() -> Self {
-        let _ = std::fs::remove_file(SOCKET_PATH);
-        let core_bin = env!("CARGO_BIN_EXE_core");
+	fn spawn() -> Self {
+		let _ = std::fs::remove_file(SOCKET_PATH);
+		let core_bin = env!("CARGO_BIN_EXE_core");
 
-        let process = Command::new(core_bin)
-            .spawn()
-            .expect("Failed to execute core daemon binary.");
+		let process = Command::new(core_bin)
+			.spawn()
+			.expect("Failed to execute core daemon binary.");
 
-        let guard = Self { process };
-        guard.await_socket_readiness();
-        guard
-    }
+		let guard = Self { process };
+		guard.await_socket_readiness();
+		guard
+	}
 
-    fn await_socket_readiness(&self) {
-        let start = Instant::now();
-        let timeout = Duration::from_secs(5);
+	fn await_socket_readiness(&self) {
+		let start = Instant::now();
+		let timeout = Duration::from_secs(5);
 
-        while start.elapsed() < timeout {
-            if Path::new(SOCKET_PATH).exists() && UnixStream::connect(SOCKET_PATH).is_ok() {
-                thread::sleep(Duration::from_millis(200));
-                return;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        panic!("Core daemon failed to bind IPC socket within timeout limit.");
-    }
+		while start.elapsed() < timeout {
+			if Path::new(SOCKET_PATH).exists() && UnixStream::connect(SOCKET_PATH).is_ok() {
+				thread::sleep(Duration::from_millis(200));
+				return;
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+		panic!("Core daemon failed to bind IPC socket within timeout limit.");
+	}
 }
 
 impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
-    }
+	fn drop(&mut self) {
+		let _ = self.process.kill();
+		let _ = self.process.wait();
+	}
 }
 
 fn execute_cli(args: &[&str]) -> String {
-    let core_bin = PathBuf::from(env!("CARGO_BIN_EXE_core"));
-    let cli_bin = core_bin.with_file_name("cli");
-    
-    let output = Command::new(cli_bin)
-        .args(args)
-        .output()
-        .expect("Failed to execute CLI binary.");
+	let core_bin = PathBuf::from(env!("CARGO_BIN_EXE_core"));
+	let cli_bin = core_bin.with_file_name("cli");
 
-    String::from_utf8_lossy(&output.stdout).to_string()
+	let output = Command::new(cli_bin)
+		.args(args)
+		.output()
+		.expect("Failed to execute CLI binary.");
+
+	String::from_utf8_lossy(&output.stdout).to_string()
 }
 
 #[test]
 fn test_true_enforcement_toggling() {
-    let _daemon = DaemonGuard::spawn();
+	let _daemon = DaemonGuard::spawn();
 
-    // exec_block module
-    let test_payload = "/tmp/bouclier_malware_sim";
-    fs::copy("/bin/true", test_payload).expect("Failed to stage test payload");
-    
-    let mut perms = fs::metadata(test_payload).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(test_payload, perms).unwrap();
+	// exec_block module
+	let test_payload = "/tmp/bouclier_malware_sim";
+	fs::copy("/bin/true", test_payload).expect("Failed to stage test payload");
 
-    println!("Phase 1: Testing default active enforcement...");
-    
-    let execute_attempt_1 = Command::new(test_payload).output();
-    
-    // If the BPF LSM hook catches this, it prevents the execve syscall. 
-    // Rust translates this kernel EPERM into an ErrorKind::PermissionDenied.
-    let is_blocked = match execute_attempt_1 {
-        Err(e) if e.kind() == ErrorKind::PermissionDenied => true,
-        Ok(out) if !out.status.success() => true,
-        _ => false,
-    };
-    
-    assert!(is_blocked, "CRITICAL SECURITY FAILURE: eBPF module did not block execution upon startup.");
+	let mut perms = fs::metadata(test_payload).unwrap().permissions();
+	perms.set_mode(0o755);
+	fs::set_permissions(test_payload, perms).unwrap();
 
-    println!("Phase 2: Disabling module and verifying kernel state...");
-    let disable_out = execute_cli(&["disable", "exec_block"]);
-    assert!(disable_out.contains("SUCCESS"), "CLI failed to disable module");
+	println!("Phase 1: Testing default active enforcement...");
 
-    let execute_attempt_2 = Command::new(test_payload).output();
-    
-    match execute_attempt_2 {
-        Ok(out) => assert!(out.status.success(), "Payload should have executed successfully when module is disabled."),
-        Err(e) => panic!("Execution failed unexpectedly while module was disabled: {}", e),
-    }
+	let execute_attempt_1 = Command::new(test_payload).output();
 
-    println!("Phase 3: Re-enabling module and verifying kernel state...");
-    let enable_out = execute_cli(&["enable", "exec_block"]);
-    assert!(enable_out.contains("SUCCESS"), "CLI failed to re-enable module");
+	// If the BPF LSM hook catches this, it prevents the execve syscall.
+	// Rust translates this kernel EPERM into an ErrorKind::PermissionDenied.
+	let is_blocked = match execute_attempt_1 {
+		Err(e) if e.kind() == ErrorKind::PermissionDenied => true,
+		Ok(out) if !out.status.success() => true,
+		_ => false,
+	};
 
-    let execute_attempt_3 = Command::new(test_payload).output();
-    
-    let is_blocked_again = match execute_attempt_3 {
-        Err(e) if e.kind() == ErrorKind::PermissionDenied => true,
-        Ok(out) if !out.status.success() => true,
-        _ => false,
-    };
+	assert!(
+		is_blocked,
+		"CRITICAL SECURITY FAILURE: eBPF module did not block execution upon startup."
+	);
 
-    assert!(is_blocked_again, "CRITICAL SECURITY FAILURE: eBPF module failed to resume blocking after re-enable.");
+	println!("Phase 2: Disabling module and verifying kernel state...");
+	let disable_out = execute_cli(&["disable", "exec_block"]);
+	assert!(
+		disable_out.contains("SUCCESS"),
+		"CLI failed to disable module"
+	);
 
-    let _ = fs::remove_file(test_payload);
-    println!("True enforcement lifecycle verified successfully.");
+	let execute_attempt_2 = Command::new(test_payload).output();
+
+	match execute_attempt_2 {
+		Ok(out) => assert!(
+			out.status.success(),
+			"Payload should have executed successfully when module is disabled."
+		),
+		Err(e) => panic!(
+			"Execution failed unexpectedly while module was disabled: {}",
+			e
+		),
+	}
+
+	println!("Phase 3: Re-enabling module and verifying kernel state...");
+	let enable_out = execute_cli(&["enable", "exec_block"]);
+	assert!(
+		enable_out.contains("SUCCESS"),
+		"CLI failed to re-enable module"
+	);
+
+	let execute_attempt_3 = Command::new(test_payload).output();
+
+	let is_blocked_again = match execute_attempt_3 {
+		Err(e) if e.kind() == ErrorKind::PermissionDenied => true,
+		Ok(out) if !out.status.success() => true,
+		_ => false,
+	};
+
+	assert!(
+		is_blocked_again,
+		"CRITICAL SECURITY FAILURE: eBPF module failed to resume blocking after re-enable."
+	);
+
+	let _ = fs::remove_file(test_payload);
+	println!("True enforcement lifecycle verified successfully.");
 }

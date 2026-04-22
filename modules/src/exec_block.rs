@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{BpfReader, define_security_module};
+use crate::{define_security_module, BpfReader};
 use walkdir::WalkDir;
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.

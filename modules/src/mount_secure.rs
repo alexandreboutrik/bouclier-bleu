@@ -16,7 +16,7 @@
 
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{BpfReader, define_security_module};
+use crate::{define_security_module, BpfReader};
 
 /// Telemetry payload yielded by the `mount_secure` BPF hook.
 #[derive(Debug)]

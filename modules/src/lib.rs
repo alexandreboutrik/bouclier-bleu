@@ -19,7 +19,7 @@
 //! This module provides the `SecurityModule` contract and the IoC registry,
 //! decoupling specific defensive heuristics from the core eBPF routing engine.
 
-use rustix::fs::{CWD, Mode, OFlags, openat};
+use rustix::fs::{openat, Mode, OFlags, CWD};
 use std::fs::{File, Metadata};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;

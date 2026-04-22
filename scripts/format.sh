@@ -118,8 +118,10 @@ function format_rust() {
 
 	pushd "${MAIN_DIR}" >/dev/null || exit 1
 
-	if command -v cargo >/dev/null 2>&1; then
-		cargo fmt -- ${RUST_FLAGS} --config hard_tabs=true,tab_spaces=4 ||
+	if command -v rustfmt >/dev/null 2>&1; then
+		# Find all .rs files, explicitly ignoring build targets and git
+		find "${MAIN_DIR}" -type f -name '*.rs' ! -path "*/target/*" ! -path "*/.git/*" \
+			-exec rustfmt ${RUST_FLAGS} --edition 2021 --config hard_tabs=true,tab_spaces=4 {} + ||
 			{
 				echo "Rust formatting failed. Exiting."
 				exit 1

@@ -69,13 +69,16 @@ function print_help() {
 	echo "  ./scripts/co-re.sh [OPTIONS]"
 	echo
 	echo "DESCRIPTION:"
-	echo "  Compiles eBPF programs and verifies their CO-RE (Compile Once - Run Everywhere) compliance."
-	echo "  This includes checking for BTF sections, CO-RE relocations, and optionally running a dry-run"
-	echo "  against the active kernel verifier."
+	echo "  Compiles eBPF programs and verifies their CO-RE (Compile Once - Run Everywhere)"
+	echo "  compliance."
+	echo
+	echo "  This includes checking for BTF sections, CO-RE relocations, and optionally"
+	echo "  running a dry-run against the active kernel verifier."
 	echo
 	echo "OPTIONS:"
 	echo "  -help, -h               Display this help message and exit."
-	echo "  --skip-verifier         Skip the in-kernel bpftool prog load dry-run (bypasses sudo requirement)."
+	echo "  --skip-verifier         Skip the in-kernel bpftool prog load dry-run (bypasses"
+	echo "                          sudo requirement)."
 	echo
 	echo "EXAMPLES:"
 	echo "  $ ./scripts/co-re.sh"
