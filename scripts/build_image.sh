@@ -16,113 +16,242 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Exit immediately on uninitialized variables or pipe failures
 set -uo pipefail
 
 # ==========================================
-# CONFIGURATION
+# DEFAULT VARIABLES & OPTIONS
 # ==========================================
-: "${IMAGE_ALIAS:="bouclier-bleu-test-base"}"
-: "${BUILDER_VM:="bb-image-builder"}"
+: "${BB_HELP:=0}"
+: "${TARGET_OS:=""}"
+: "${OUTPUT_NAME:="bouclier-bleu-test-base"}"
+
+# OS Version Configuration (Modify these to bump versions in the future)
+: "${UBUNTU_VERSION:="24.04"}"
+: "${FEDORA_VERSION:="43"}"
+
+# Project Paths
 : "${MAIN_DIR:="$(pwd)"}"
 : "${TESTS_DIR:="${MAIN_DIR}/tests"}"
 
-USER_ID=$(id -u)
-GROUP_ID=$(id -g)
+# Internal Variables (Populated in init_env)
+IMAGE_ALIAS=""
+BUILDER_VM=""
 
 # ==========================================
-# INFRASTRUCTURE LIFECYCLE
+# COMMAND LINE ARGUMENT PARSING
 # ==========================================
 
-function nuke_conflicts() {
-	echo -e "\n[*] Purging legacy build artifacts..."
+# If no arguments are passed, trigger the help menu
+if [ $# -eq 0 ]; then
+	BB_HELP=1
+fi
 
-	if incus list --format csv -c n | grep -qx "${BUILDER_VM}"; then
-		incus stop "${BUILDER_VM}" --force >/dev/null 2>&1 || true
-		incus delete "${BUILDER_VM}" --force >/dev/null 2>&1 || true
-	fi
+while [ $# -ne 0 ]; do
+	case "${1}" in
+	"-help" | "-h" | "help")
+		BB_HELP=1
+		;;
+	"-os")
+		if [ -n "${2:-}" ]; then
+			TARGET_OS="${2}"
+			shift
+		else
+			echo "Error: -os requires an argument (ubuntu or fedora)."
+			BB_HELP=1
+		fi
+		;;
+	"-out")
+		if [ -n "${2:-}" ]; then
+			OUTPUT_NAME="${2}"
+			shift
+		else
+			echo "Error: -out requires a string argument for the image alias."
+			BB_HELP=1
+		fi
+		;;
+	*)
+		echo "Error: Unknown argument '${1}'"
+		echo
+		BB_HELP=1
+		;;
+	esac
+	shift
+done
 
-	if incus image list --format csv -c l | grep -q "${IMAGE_ALIAS}"; then
-		incus image delete "${IMAGE_ALIAS}" >/dev/null 2>&1 || true
-	fi
+# ==========================================
+# FUNCTIONS
+# ==========================================
 
-	# Terminate background operations specific to our testing targets to
-	# release locks
-	local ops
-	ops=$(incus operation list --format csv | grep -E "(${BUILDER_VM}|${IMAGE_ALIAS})" | cut -d',' -f1 || true)
-	if [[ -n "$ops" ]]; then
-		for op in $ops; do
-			incus operation delete "$op" >/dev/null 2>&1 || true
-		done
-	fi
-	sleep 1
+function print_help() {
+	if [ "${BB_HELP}" != "1" ]; then return; fi
+
+	echo "USAGE:"
+	echo "  ./scripts/build_image.sh -os <ubuntu|fedora> [-out <image_alias>]"
+	echo
+	echo "DESCRIPTION:"
+	echo "  Provisions and exports a base testing VM image for Bouclier Bleu."
+	echo "  This script generates a clean environment with all necessary eBPF"
+	echo "  and Rust toolchains pre-installed."
+	echo
+	echo "OPTIONS:"
+	echo "  -os                     Required. Target OS distribution ('ubuntu' or 'fedora')."
+	echo "  -out                    Optional. Output alias for the generated tarball."
+	echo "                          Defaults to 'bouclier-bleu-test-base'."
+	echo "  -help, -h               Display this help message and exit."
+	echo
+	echo "EXAMPLES:"
+	echo "  $ ./scripts/build_image.sh -os ubuntu"
+	echo "  $ ./scripts/build_image.sh -os fedora -out bb-fedora-43-base"
+	exit 0
 }
 
-function provision_vm() {
-	echo -e "\n[*] Provisioning Ubuntu 24.04 toolchain environment..."
-
-	if ! incus launch images:ubuntu/24.04 "${BUILDER_VM}" --vm -c security.secureboot=false; then
-		# Handle persistent database locks by randomizing the instance
-		# namespace
-		BUILDER_VM="bb-builder-$(date +%s)"
-		incus launch images:ubuntu/24.04 "${BUILDER_VM}" --vm -c security.secureboot=false || exit 1
+function init_env() {
+	if [ -z "${TARGET_OS}" ]; then
+		echo "Error: Target OS (-os) is strictly required."
+		echo
+		BB_HELP=1 print_help
+		exit 1
 	fi
 
-	local attempts=0
-	while ! incus exec "${BUILDER_VM}" -- echo "ready" >/dev/null 2>&1; do
-		attempts=$((attempts + 1))
-		[[ ${attempts} -ge 60 ]] && {
-			echo "[-] VM Agent initialization timeout."
+	if [[ "${TARGET_OS}" != "ubuntu" ]] && [[ "${TARGET_OS}" != "fedora" ]]; then
+		echo "Error: Unsupported OS '${TARGET_OS}'. Please use 'ubuntu' or 'fedora'."
+		exit 1
+	fi
+
+	IMAGE_ALIAS="${OUTPUT_NAME}"
+	BUILDER_VM="bb-image-builder-${TARGET_OS}"
+
+	echo "Starting automated image builder for Bouclier Bleu (${TARGET_OS})..."
+}
+
+function nuke_conflicts() {
+	echo -e "\n[*] Purging legacy build artifacts and freeing space..."
+
+	# Aggressively find and delete ANY instance starting with 'bb-' or
+	# 'bouclier-'
+	local orphaned_vms
+	orphaned_vms=$(incus list --format csv -c n | grep -E '^(bb-|bouclier-)' || true)
+	if [ -n "$orphaned_vms" ]; then
+		for vm in $orphaned_vms; do
+			echo "    Force deleting orphaned VM: $vm"
+			incus stop "$vm" --force >/dev/null 2>&1 || true
+			incus delete "$vm" --force >/dev/null 2>&1 || true
+		done
+	fi
+
+	# Aggressively find and delete ANY image alias starting with 'bb-' or
+	# 'bouclier-'
+	local orphaned_images
+	orphaned_images=$(incus image list --format csv -c l | grep -E '^(bb-|bouclier-)' || true)
+	if [ -n "$orphaned_images" ]; then
+		for img in $orphaned_images; do
+			echo "    Removing orphaned image: $img"
+			incus image rm "$img" >/dev/null 2>&1 || true
+		done
+	fi
+}
+
+function provision_environment() {
+	echo -e "\n[*] Provisioning base VM for ${TARGET_OS}..."
+
+	local incus_image=""
+	local setup_cmds=""
+
+	# OS-Specific Package Mapping
+	if [[ "${TARGET_OS}" == "ubuntu" ]]; then
+		incus_image="images:ubuntu/${UBUNTU_VERSION}/cloud"
+		setup_cmds="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang llvm pkg-config curl linux-tools-common linux-tools-generic libelf-dev zlib1g-dev attr"
+	elif [[ "${TARGET_OS}" == "fedora" ]]; then
+		incus_image="images:fedora/${FEDORA_VERSION}/cloud"
+		setup_cmds="dnf install -y @development-tools clang llvm pkgconf-pkg-config curl bpftool elfutils-libelf-devel zlib-devel attr grubby"
+	fi
+
+	# Added -d root,size=20GiB to ensure DNF and Rustup have enough extraction space
+	incus launch "${incus_image}" "${BUILDER_VM}" --vm -c security.secureboot=false -c limits.cpu=4 -c limits.memory=8GB -d root,size=20GiB ||
+		{
+			echo "Failed to launch Incus VM. Exiting."
 			exit 1
 		}
+
+	echo "[*] Waiting for Incus VM agent to initialize..."
+	while ! incus exec "${BUILDER_VM}" -- true >/dev/null 2>&1; do
 		sleep 2
 	done
 
-	# Inject dependencies required for eBPF object compilation (libelf, zlib)
-	# and Rust toolchains
-	incus exec "${BUILDER_VM}" -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang llvm pkg-config curl linux-tools-common linux-tools-generic libelf-dev zlib1g-dev attr"
-	incus exec "${BUILDER_VM}" -- bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+	echo "[*] Waiting for cloud-init to finish provisioning and resizing disks..."
+	incus exec "${BUILDER_VM}" -- cloud-init status --wait || true
 
-	# Flush VFS cache to physical disk to prevent corruption during graceful
-	# shutdowns
+	echo "[*] Masking background updates to prevent BTF corruption..."
+	if [[ "${TARGET_OS}" == "ubuntu" ]]; then
+		incus exec "${BUILDER_VM}" -- systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+		incus exec "${BUILDER_VM}" -- systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service
+	fi
+
+	echo "[*] Injecting build dependencies..."
+	incus exec "${BUILDER_VM}" -- bash -c "${setup_cmds}" ||
+		{
+			echo "Failed to install OS dependencies. Exiting."
+			exit 1
+		}
+
+	incus exec "${BUILDER_VM}" -- bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y" ||
+		{
+			echo "Failed to install Rust toolchain. Exiting."
+			exit 1
+		}
+
+	# Flush VFS cache to physical disk to prevent corruption during graceful shutdowns
 	incus exec "${BUILDER_VM}" -- sync
 
 	echo "[*] Synchronizing storage and halting VM..."
-	incus stop "${BUILDER_VM}"
+	incus stop "${BUILDER_VM}" ||
+		{
+			echo "Failed to stop builder VM safely. Exiting."
+			exit 1
+		}
 	sleep 3
 }
 
 function publish_and_export() {
 	echo -e "\n[*] Generating local VM snapshot..."
-	if ! incus publish "${BUILDER_VM}" --alias "${IMAGE_ALIAS}"; then
-		echo "[-] Internal image publication failed."
-		exit 1
-	fi
+	incus publish "${BUILDER_VM}" --alias "${IMAGE_ALIAS}" ||
+		{
+			echo "Internal image publication failed. Exiting."
+			exit 1
+		}
 
 	echo "[*] Exporting image to ${TESTS_DIR}..."
 
 	mkdir -p "${TESTS_DIR}"
 	rm -f "${TESTS_DIR}/${IMAGE_ALIAS}"*
 
-	if incus image export "${IMAGE_ALIAS}" "${TESTS_DIR}/${IMAGE_ALIAS}"; then
-		echo "[+] Snapshot exported successfully to ${TESTS_DIR}/"
-	else
-		echo "[-] Tarball export failed."
-		exit 1
-	fi
+	incus image export "${IMAGE_ALIAS}" "${TESTS_DIR}/${IMAGE_ALIAS}" ||
+		{
+			echo "Tarball export failed. Exiting."
+			exit 1
+		}
+
+	echo "[+] Snapshot exported successfully to ${TESTS_DIR}/"
 }
 
 function cleanup() {
 	echo -e "\n[*] Finalizing state..."
 	incus delete "${BUILDER_VM}" --force >/dev/null 2>&1 || true
-	incus image delete "${IMAGE_ALIAS}" >/dev/null 2>&1 || true
+	incus image rm "${IMAGE_ALIAS}" >/dev/null 2>&1 || true
 }
 
 # ==========================================
-# ENTRYPOINT
+# MAIN EXECUTION
 # ==========================================
+
+# Print help and exit if triggered
+print_help
+
+init_env
 nuke_conflicts
-provision_vm
+provision_environment
 publish_and_export
 cleanup
 
-echo -e "\n[+] Build process finished successfully."
+echo -e "\n[+] Image build complete: ${IMAGE_ALIAS}.tar.gz"

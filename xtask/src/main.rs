@@ -22,7 +22,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const VM_NAME: &str = "bb-test-runner";
-const IMAGE_ALIAS: &str = "bouclier-bleu-test-base";
 const SNAPSHOT_NAME: &str = "clean-state";
 
 type TaskResult<T> = Result<T, String>;
@@ -36,25 +35,46 @@ struct TestRecord {
 }
 
 fn main() {
-	let mut args = env::args().skip(1);
+	let mut args: Vec<String> = env::args().skip(1).collect();
 
-	let result = match args.next().as_deref() {
-		Some("prepare-image") => prepare_test_image(),
-		Some("test") => run_tests(args.next().as_deref(), args.next().as_deref()),
+	// Default image if no flag is provided
+	let mut target_image = String::from("bouclier-bleu-test-base");
+
+	// Extract `-img <name>` or `--img <name>` if present
+	if let Some(idx) = args.iter().position(|a| a == "-img" || a == "--img") {
+		if idx + 1 < args.len() {
+			target_image = args[idx + 1].clone();
+			args.remove(idx + 1); // Remove the value
+			args.remove(idx); // Remove the flag
+		} else {
+			eprintln!("Error: -img flag requires an image name argument.");
+			exit(1);
+		}
+	}
+
+	let mut args_iter = args.into_iter();
+
+	let result = match args_iter.next().as_deref() {
+		Some("prepare-image") => prepare_test_image(&target_image),
+		Some("test") => run_tests(
+			args_iter.next().as_deref(),
+			args_iter.next().as_deref(),
+			&target_image,
+		),
 		_ => {
 			eprintln!("Bouclier Bleu Build & Test Pipeline");
 			eprintln!("Usage:");
-			eprintln!("  cargo xtask prepare-image           - Builds the base testing VM image");
-			eprintln!("  cargo xtask test                    - Runs all public test suites in VM");
+			eprintln!("  cargo xtask [-img <image>] prepare-image           - Builds the base testing VM image");
+			eprintln!("  cargo xtask [-img <image>] test                    - Runs all public test suites in VM");
+			eprintln!("  cargo xtask [-img <image>] test component          - Runs all module component tests in VM");
+			eprintln!("  cargo xtask [-img <image>] test integration        - Runs all integration tests in VM");
 			eprintln!(
-				"  cargo xtask test component          - Runs all module component tests in VM"
+				"  cargo xtask [-img <image>] test benchmark          - Runs all benchmarks in VM"
 			);
-			eprintln!("  cargo xtask test integration        - Runs all integration tests in VM");
-			eprintln!("  cargo xtask test benchmark          - Runs all benchmarks in VM");
+			eprintln!("  cargo xtask [-img <image>] test <category> [test]  - Runs a specific test file within a category");
 			eprintln!(
-				"  cargo xtask test <category> [test]  - Runs a specific test file within a category"
+				"  cargo xtask [-img <image>] test <fuzz/threat>      - Restricted Private Suites"
 			);
-			eprintln!("  cargo xtask test <fuzz/threat>      - Restricted Private Suites");
 			exit(1);
 		}
 	};
@@ -80,10 +100,14 @@ impl Drop for VmGuard {
 }
 
 /// Primary orchestration sequence for test execution.
-fn run_tests(category: Option<&str>, target_test: Option<&str>) -> TaskResult<()> {
-	prepare_test_image()?;
+fn run_tests(
+	category: Option<&str>,
+	target_test: Option<&str>,
+	image_alias: &str,
+) -> TaskResult<()> {
+	prepare_test_image(image_alias)?;
 	let _guard = VmGuard; // Bind VM lifecycle strictly to this scope
-	let setup_time = setup_and_snapshot_vm()?;
+	let setup_time = setup_and_snapshot_vm(image_alias)?;
 
 	let mut all_results = Vec::new();
 	let mut cumulative_restore_time = Duration::ZERO;
@@ -259,15 +283,18 @@ where
 
 // --- Incus VM Orchestration Subsystem ---
 
-fn setup_and_snapshot_vm() -> TaskResult<Duration> {
-	println!("\n[INFO] Provisioning Base Incus VM Environment...");
+fn setup_and_snapshot_vm(image_alias: &str) -> TaskResult<Duration> {
+	println!(
+		"\n[INFO] Provisioning Base Incus VM Environment (Image: {})...",
+		image_alias
+	);
 	let start = Instant::now();
 
-	ensure_base_image()?;
+	ensure_base_image(image_alias)?;
 	let _ = Command::new("incus")
 		.args(["delete", VM_NAME, "--force"])
 		.output();
-	launch_instance()?;
+	launch_instance(image_alias)?;
 	await_guest_agent()?;
 
 	transfer_workspace()?;
@@ -284,16 +311,19 @@ fn setup_and_snapshot_vm() -> TaskResult<Duration> {
 	Ok(start.elapsed())
 }
 
-fn ensure_base_image() -> TaskResult<()> {
+fn ensure_base_image(image_alias: &str) -> TaskResult<()> {
 	if Command::new("incus")
-		.args(["image", "info", IMAGE_ALIAS])
+		.args(["image", "info", image_alias])
 		.output()
 		.map_or(false, |o| o.status.success())
 	{
 		return Ok(());
 	}
 
-	println!("[INFO] Synchronizing base image to Incus database...");
+	println!(
+		"[INFO] Synchronizing base image '{}' to Incus database...",
+		image_alias
+	);
 	let img = fs::read_dir(project_root().join("tests"))
 		.ok()
 		.into_iter()
@@ -302,10 +332,15 @@ fn ensure_base_image() -> TaskResult<()> {
 		.find(|e| {
 			e.file_name()
 				.to_string_lossy()
-				.starts_with("bouclier-bleu-test-base.tar")
+				.starts_with(&format!("{}.tar", image_alias))
 		})
 		.map(|e| e.path())
-		.ok_or("Pre-compiled test image missing. Run `cargo xtask prepare-image`.")?;
+		.ok_or_else(|| {
+			format!(
+				"Pre-compiled test image '{}' missing. Run `scripts/build_image.sh -out {}`.",
+				image_alias, image_alias
+			)
+		})?;
 
 	let import_out = Command::new("incus")
 		.args([
@@ -313,7 +348,7 @@ fn ensure_base_image() -> TaskResult<()> {
 			"import",
 			img.to_str().unwrap(),
 			"--alias",
-			IMAGE_ALIAS,
+			image_alias,
 		])
 		.output()
 		.map_err(|e| format!("Incus import failed: {}", e))?;
@@ -332,7 +367,7 @@ fn ensure_base_image() -> TaskResult<()> {
 				.unwrap_or("")
 				.to_string();
 			execute_cmd(
-				Command::new("incus").args(["image", "alias", "create", IMAGE_ALIAS, &fingerprint]),
+				Command::new("incus").args(["image", "alias", "create", image_alias, &fingerprint]),
 				"Failed to bypass alias lock",
 			)?;
 		} else {
@@ -415,7 +450,7 @@ fn enforce_airgap() -> TaskResult<()> {
 	)
 }
 
-fn launch_instance() -> TaskResult<()> {
+fn launch_instance(image_alias: &str) -> TaskResult<()> {
 	println!(
 		"[INFO] Spawning isolated guest environment ({})...",
 		VM_NAME
@@ -424,7 +459,7 @@ fn launch_instance() -> TaskResult<()> {
 	execute_cmd(
 		Command::new("incus").args([
 			"launch",
-			IMAGE_ALIAS,
+			image_alias,
 			VM_NAME,
 			"--vm",
 			"-c",
@@ -501,9 +536,40 @@ fn compile_workspace() -> TaskResult<()> {
 
 fn inject_kernel_parameters() -> TaskResult<()> {
 	println!("[INFO] Activating eBPF LSM subsystem in guest kernel...");
-	incus_exec(
-		"echo 'GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_CMDLINE_LINUX_DEFAULT} lsm=landlock,lockdown,yama,integrity,apparmor,bpf\"' > /etc/default/grub.d/99-bpf-lsm.cfg && update-grub",
-	)?;
+
+	let enable_lsm_script = r#"
+    export PATH="$PATH:/usr/sbin:/sbin"
+
+    if command -v grubby >/dev/null 2>&1; then
+        # Fedora / RHEL Family
+        grubby --update-kernel=ALL --args="lsm=bpf"
+    elif command -v update-grub >/dev/null 2>&1; then
+        # Ubuntu / Debian Family
+        mkdir -p /etc/default/grub.d
+        echo 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} lsm=bpf"' > /etc/default/grub.d/99-bpf-lsm.cfg
+        update-grub
+    else
+        echo "Error: Neither grubby nor update-grub found. Cannot configure LSM." >&2
+        exit 1
+    fi
+"#;
+
+	let status = Command::new("incus")
+		.args(&["exec", VM_NAME, "--", "bash", "-c", enable_lsm_script])
+		.status()
+		.expect("Failed to execute VM process");
+
+	if !status.success() {
+		eprintln!("[FATAL] Pipeline terminated: Guest command failed to update GRUB.");
+		std::process::exit(1);
+	}
+
+	println!(
+		"[INFO] Masking network-wait and cloud services to prevent airgap boot/shutdown hangs..."
+	);
+	let _ = incus_exec(
+    "systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service cloud-init.service cloud-config.service cloud-final.service cloud-init-local.service"
+);
 
 	println!("[INFO] Re-initializing kernel via cold boot...");
 	execute_cmd(
@@ -555,7 +621,7 @@ fn restore_vm_snapshot() -> TaskResult<Duration> {
 // --- System Utilities ---
 
 fn await_guest_agent() -> TaskResult<()> {
-	for _ in 0..40 {
+	for _ in 0..120 {
 		if Command::new("incus")
 			.args(["exec", VM_NAME, "--", "echo", "ready"])
 			.output()
@@ -601,18 +667,28 @@ fn execute_cmd(cmd: &mut Command, error_msg: &str) -> TaskResult<()> {
 	Ok(())
 }
 
-fn prepare_test_image() -> TaskResult<()> {
+fn prepare_test_image(image_alias: &str) -> TaskResult<()> {
 	let root = project_root();
-	if root.join("tests/bouclier-bleu-test-base.tar.gz").exists()
-		|| root.join("tests/bouclier-bleu-test-base.tar.xz").exists()
+
+	if root.join(format!("tests/{}.tar.gz", image_alias)).exists()
+		|| root.join(format!("tests/{}.tar.xz", image_alias)).exists()
 	{
 		return Ok(());
 	}
 
-	println!("[INFO] Pre-compiled testing artifact missing. Initiating build sequence...");
+	println!(
+		"[INFO] Pre-compiled testing artifact '{}' missing. Initiating build sequence...",
+		image_alias
+	);
 	execute_cmd(
 		Command::new("bash")
-			.arg(root.join("scripts/build_image.sh"))
+			.args([
+				root.join("scripts/build_image.sh").to_str().unwrap(),
+				"-os",
+				"ubuntu",
+				"-out",
+				image_alias,
+			])
 			.current_dir(&root),
 		"Upstream base-image compilation script failed",
 	)
