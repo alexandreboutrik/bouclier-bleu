@@ -229,8 +229,29 @@ struct renamedata___old {
  * @mod_name: String literal for BPF printk error context.
  */
 #define BOUCLIER_GENERATE_RENAME_HOOK(prefix, mod_name)                        \
-	SEC("fexit/vfs_rename")                                                    \
-	int BPF_PROG(prefix##_vfs_rename_exit, struct renamedata *rd, int ret) {   \
+	/* Pre-2025 VFS Signature (Returns int, takes 7 args) */                   \
+	SEC("?fexit/vfs_rename")                                                   \
+	int BPF_PROG(prefix##_vfs_rename_exit_old, struct mnt_idmap *idmap,        \
+				 struct inode *old_dir, struct dentry *old_dentry,             \
+				 struct inode *new_dir, struct dentry *new_dentry,             \
+				 struct inode **delegated_inode, unsigned int flags,           \
+				 int ret) {                                                    \
+		if (ret != 0 || !is_module_active(&state_map)) {                       \
+			return 0;                                                          \
+		}                                                                      \
+		struct dir_id target_parent_id = {};                                   \
+		struct dir_id moved_id = {};                                           \
+		extract_dir_id_from_inode(new_dir, &target_parent_id);                 \
+		extract_dir_id_from_dentry(old_dentry, &moved_id);                     \
+		inherit_protection(&protected_dirs, &target_parent_id, &moved_id,      \
+						   mod_name);                                          \
+		return 0;                                                              \
+	}                                                                          \
+                                                                               \
+	/* Post-2025 VFS Signature (Returns int, takes 1 arg) */                   \
+	SEC("?fexit/vfs_rename")                                                   \
+	int BPF_PROG(prefix##_vfs_rename_exit_new, struct renamedata *rd,          \
+				 int ret) {                                                    \
 		if (ret != 0 || !is_module_active(&state_map)) {                       \
 			return 0;                                                          \
 		}                                                                      \
@@ -238,7 +259,7 @@ struct renamedata___old {
 		struct dir_id moved_id = {};                                           \
 		/* Dynamic CO-RE Layout Validation */                                  \
 		if (bpf_core_field_exists(                                             \
-				((struct renamedata___new *)rd)->new_parent)) {                \
+				((struct renamedata___new *)0)->new_parent)) {                 \
 			struct dentry *new_parent =                                        \
 				BPF_CORE_READ((struct renamedata___new *)rd, new_parent);      \
 			extract_dir_id_from_dentry(new_parent, &target_parent_id);         \

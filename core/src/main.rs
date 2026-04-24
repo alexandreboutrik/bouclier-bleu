@@ -56,11 +56,11 @@ impl<'a> modules::MapProvider for CoreMapProvider<'a> {
 	}
 }
 
-/// Determines if the host kernel is running version 6.13 or newer.
+/// Determines if the host kernel is running version 6.12 or newer.
 /// This boundary signifies the major VFS refactor where `vfs_mkdir`
 /// transitioned to returning a `struct dentry *` instead of an `int`.
 fn is_post_2025_vfs() -> bool {
-	// Attempt to read the release string (e.g., "6.13.0-azure\n")
+	// Attempt to read the release string (e.g., "6.12.0-azure\n")
 	let release = match fs::read_to_string("/proc/sys/kernel/osrelease") {
 		Ok(s) => s.trim().to_string(),
 		Err(_) => {
@@ -76,7 +76,7 @@ fn is_post_2025_vfs() -> bool {
 		if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
 			if major > 6 {
 				return true;
-			} else if major == 6 && minor >= 13 {
+			} else if major == 6 && minor >= 12 {
 				return true;
 			}
 			return false;
@@ -143,17 +143,34 @@ fn main() -> Result<()> {
 			 */
 			let old_hook = format!("{}_vfs_mkdir_exit_old", mod_name);
 			let new_hook = format!("{}_vfs_mkdir_exit_new", mod_name);
+			let old_rename = format!("{}_vfs_rename_exit_old", mod_name);
+			let new_rename = format!("{}_vfs_rename_exit_new", mod_name);
 
 			if post_2025 {
-				// We are on >= 6.13. Enable the post-2025 (dentry) hook.
+				// We are on >= 6.12. Enable the post-2025 (dentry) hook.
 				if let Some(prog) = obj.prog_mut(&new_hook) {
 					let _ = prog.set_autoload(true);
 				}
+				if let Some(prog) = obj.prog_mut(&old_hook) {
+					let _ = prog.set_autoload(false);
+				}
 			} else {
-				// We are on < 6.13. Enable the pre-2025 (int) hook.
 				if let Some(prog) = obj.prog_mut(&old_hook) {
 					let _ = prog.set_autoload(true);
 				}
+				if let Some(prog) = obj.prog_mut(&new_hook) {
+					let _ = prog.set_autoload(false);
+				}
+			}
+
+			// vfs_rename has taken `struct renamedata *` since Linux 5.12.
+			// The CO-RE logic inside the _new hook already dynamically
+			// handles the layout changes.
+			if let Some(prog) = obj.prog_mut(&new_rename) {
+				let _ = prog.set_autoload(true);
+			}
+			if let Some(prog) = obj.prog_mut(&old_rename) {
+				let _ = prog.set_autoload(false);
 			}
 
 			Ok(())

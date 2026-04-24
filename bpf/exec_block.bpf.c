@@ -167,7 +167,8 @@ block_exec:
 		bpf_printk("Bouclier Bleu [BLOCK]: Evasion attempt (Path too long)\n");
 		return -EPERM;
 	} else if (len <= 0) {
-		return 0;
+		/* null-terminate the buffer and continue to block the execution */
+		path_buf[0] = '\0';
 	}
 
 	event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);

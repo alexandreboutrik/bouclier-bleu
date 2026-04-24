@@ -110,10 +110,45 @@ static const __u32 scaled_log2[256] = {
 	8567, 8575, 8583, 8591, 8599, 8607, 8615, 8622, 8630, 8638, 8646, 8653,
 	8661, 8669, 8676, 8684};
 
+/*
+ * Byte Frequency Aggregation
+ * Iterate over the filename to populate the frequency array.
+ * __noinline prevents verifier state explosion by verifying this exactly once.
+ */
+static __noinline void
+calculate_character_counts(struct entropy_scratch *scratch) {
+	for (int i = 0; i < NAME_MAX; i++) {
+		__u8 c = scratch->name[i];
+		if (c == '\0')
+			break; // stop counting if we hit the end of the filename
+		scratch->counts[c]++;
+	}
+}
+
+/*
+ * Integer-Math Shannon Entropy
+ * Calculates the entropy using our precomputed lookup table.
+ * The bitwise mask on `c` (`c & 0xFF`) guarantees to the verifier that
+ * the lookup into the `scaled_log2` array remains within the 0-255 bounds.
+ * __noinline prevents verifier state explosion by verifying this exactly once.
+ */
+static __noinline __u32 compute_entropy(struct entropy_scratch *scratch) {
+	__u32 sum_c_log_c = 0;
+
+	for (int i = 0; i < 256; i++) {
+		__u32 c = scratch->counts[i] & 0xFF;
+		if (c == 0)
+			continue; // skip math for chars not present in the fname
+		sum_c_log_c += c * scaled_log2[c];
+	}
+
+	return sum_c_log_c;
+}
+
 SEC("lsm/path_rename")
 int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 struct dentry *old_dentry, const struct path *new_dir,
-			 struct dentry *new_dentry) {
+			 struct dentry *new_dentry, unsigned int flags) {
 	__u32 key = 0;
 	char *dir_buf;
 	struct entropy_scratch *scratch;
@@ -149,8 +184,8 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 	struct dir_id old_id = {};
 	struct dir_id new_id = {};
 
-	extract_dir_id_from_dentry(old_dir->dentry, &old_id);
-	extract_dir_id_from_dentry(new_dir->dentry, &new_id);
+	extract_dir_id_from_dentry(BPF_CORE_READ(old_dir, dentry), &old_id);
+	extract_dir_id_from_dentry(BPF_CORE_READ(new_dir, dentry), &new_id);
 
 	__u8 *old_protected = bpf_map_lookup_elem(&protected_dirs, &old_id);
 	__u8 *new_protected = bpf_map_lookup_elem(&protected_dirs, &new_id);
@@ -223,30 +258,8 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			return 0;
 	}
 
-	/*
-	 * Byte Frequency Aggregation
-	 * Iterate over the filename to populate the frequency array.
-	 */
-	for (int i = 0; i < NAME_MAX; i++) {
-		if (i >= nlen)
-			break;
-		__u8 c = scratch->name[i];
-		scratch->counts[c]++;
-	}
-
-	/*
-	 * Integer-Math Shannon Entropy
-	 * Calculates the entropy using our precomputed lookup table.
-	 * The bitwise mask on `c` (`c & 0xFF`) guarantees to the verifier that
-	 * the lookup into the `scaled_log2` array remains within the 0-255 bounds.
-	 */
-	__u32 sum_c_log_c = 0;
-	for (int i = 0; i < 256; i++) {
-		__u32 c = scratch->counts[i] & 0xFF;
-		if (c == 0)
-			continue; // skip math for chars not present in the fname
-		sum_c_log_c += c * scaled_log2[c];
-	}
+	calculate_character_counts(scratch);
+	__u32 sum_c_log_c = compute_entropy(scratch);
 
 	/*
 	 * Safeguard nlen with a mask to prove to the verifier it won't exceed the
