@@ -76,7 +76,13 @@ function initialize_daemon() {
 	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 
-	sleep 2
+	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
+	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
+	local retries=10
+	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
+		sleep 1
+		((retries--))
+	done
 
 	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
 		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
@@ -210,10 +216,15 @@ function verify_cross_directory_evasion() {
 	sleep 2.1
 
 	# ADVANCED THREAT: Moving a file FROM a protected directory (/var/...)
-	# TO an unprotected directory (/tmp/...) with a high-entropy name.
-	# Before the fix, the eBPF hook only checked the destination, allowing evasion.
+	# TO an unprotected directory with a high-entropy name.
+	# We use a temporary unmonitored directory on the rootfs (/root/)
+	# specifically to avoid EXDEV cross-filesystem `cp` fallbacks from /tmp,
+	# ensuring the `rename` syscall is actually triggered by the mv command.
+	local LOCAL_UNMONITORED="/root/bb_rename_cross_test"
+	mkdir -p "${LOCAL_UNMONITORED}"
+
 	set +e
-	mv "${TEST_DIR_SENSITIVE}/base_file_7" "${TEST_DIR_UNMONITORED}/${HIGH_ENTROPY_NAME}_cross" >/dev/null 2>&1
+	mv "${TEST_DIR_SENSITIVE}/base_file_7" "${LOCAL_UNMONITORED}/${HIGH_ENTROPY_NAME}_cross" >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 

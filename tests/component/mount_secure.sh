@@ -66,7 +66,13 @@ function initialize_daemon() {
 	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 
-	sleep 2
+	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
+	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
+	local retries=10
+	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
+		sleep 1
+		((retries--))
+	done
 
 	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
 		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."

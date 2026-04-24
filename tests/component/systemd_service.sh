@@ -87,8 +87,13 @@ function verify_service_start() {
 			exit 1
 		}
 
-	# Allow a moment for eBPF to attach and the daemon to fully initialize
-	sleep 2
+	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
+	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
+	local retries=10
+	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
+		sleep 1
+		((retries--))
+	done
 
 	if ! systemctl is-active --quiet bouclier-bleu; then
 		echo "[-] Assertion failed: Service is not active after start command."
