@@ -155,6 +155,19 @@ define_security_module!(
 			}
 		};
 
+		/*
+		 * Dynamic State Pruning (Memory Leak Prevention)
+		 * Advanced evasion techniques might drip-feed low-entropy renames over
+		 * long durations. To prevent the `STRIKE_TRACKER` map from
+		 * experiencing unbounded growth and starving daemon memory, we execute
+		 * an O(n) prune of stale entries older than 5 seconds. Since this
+		 * handler fires strictly on heuristic violations, the amortized cost
+		 * of this cleanup is negligible.
+		 */
+		tracker.retain(|_, strike| {
+			Instant::now().duration_since(strike.first_strike) < Duration::from_secs(5)
+		});
+
 		let now = Instant::now();
 
 		/*

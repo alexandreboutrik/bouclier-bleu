@@ -31,6 +31,9 @@ char LICENSE[] SEC("license") = "GPL";
 #define F_SEAL_WRITE 0x008
 #endif
 
+#define TMPFS_MAGIC 0x01021994
+#define RAMFS_MAGIC 0x858458f6
+
 /**
  * struct exec_alert - Telemetry Payload Contract
  * @pid: The Process ID originating the execve attempt.
@@ -82,6 +85,10 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
 	struct dentry *parent = BPF_CORE_READ(dentry, d_parent);
 
+	if (!dentry || !parent) {
+		return 0;
+	}
+
 	struct dir_id p_id = {};
 	extract_dir_id_from_dentry(parent, &p_id);
 
@@ -110,6 +117,19 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 	__u32 i_nlink = BPF_CORE_READ(f_inode, i_nlink);
 
 	if (i_nlink == 0) {
+		/*
+		 * Filesystem Magic Number Validation
+		 * Before blindly calculating a negative memory offset for the
+		 * container-of read, we must mathematically guarantee the underlying
+		 * inode belongs to a temporary memory-backed filesystem (tmpfs/shmem
+		 * or ramfs). If it is a standard ext4/xfs inode, the read would fetch
+		 * arbitrary adjacent memory.
+		 */
+		__u32 s_magic = BPF_CORE_READ(f_inode, i_sb, s_magic);
+		if (s_magic != TMPFS_MAGIC && s_magic != RAMFS_MAGIC) {
+			return 0;
+		}
+
 		/*
 		 * Seal Inspection Heuristic (Behavioral Validation)
 		 * Legitimate processes lock the memory segment using F_SEAL_WRITE
@@ -174,9 +194,7 @@ block_exec:
 	event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
 
 	if (event) {
-		BPF_SAFE_MEMSET(event, sizeof(*event));
-
-		// populate the Process ID (Higher 32 bits are TGID, lower are PID)
+		// populate the Process ID (Kernel TGID)
 		event->pid = bpf_get_current_pid_tgid() >> 32;
 
 		// bpf_probe_read_kernel_str guarantees safe memory access and enforces

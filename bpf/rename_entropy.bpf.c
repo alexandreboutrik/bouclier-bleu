@@ -272,20 +272,8 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 	 * Enforcement & Telemetry
 	 */
 	if (h_scaled > ENTROPY_THRESHOLD_SCALED) {
-		/*
-		 * Immediate Neutralization
-		 * Issue SIGKILL (9) directly from kernel-space. The Linux kernel
-		 * guarantees this signal is processed before the thread transitions
-		 * back to user-space, completely eliminating the Time-of-Check to
-		 * Time-of-Use (TOCTOU) race condition inherent in asynchronous
-		 * userland blocking.
-		 */
-		bpf_send_signal(9);
-
 		event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
 		if (event) {
-			BPF_SAFE_MEMSET(event, sizeof(*event));
-
 			/*
 			 * CO-RE Process Lineage Extraction
 			 * Use BPF_CORE_READ to safely walk the task_struct hierarchy.
@@ -309,7 +297,21 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			bpf_probe_read_kernel_str(event->file_name,
 									  sizeof(event->file_name), scratch->name);
 
+			/*
+			 * Immediate Neutralization
+			 * Now that telemetry is securely buffered, issue SIGKILL (9)
+			 * directly from kernel-space to eliminate TOCTOU race conditions.
+			 */
+			bpf_send_signal(9);
 			bpf_ringbuf_submit(event, 0);
+		} else {
+			/*
+			 * Map Exhaustion Fallback
+			 * If the ring buffer is full, the system is under extreme load.
+			 * We still issue the kill to prevent ransomware encryption, but
+			 * this represents a degraded, silent kill.
+			 */
+			bpf_send_signal(9);
 		}
 		return -EPERM; // Block the rename atomically in the kernel
 	}
