@@ -18,13 +18,12 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
-: "${BB_CLI_BIN:="./target/release/cli"}"
-: "${DAEMON_LOG:="/tmp/bb_daemon_mount.log"}"
-
 # Monitored directory (triggers Heuristic 2)
 : "${TEST_MNT_DIR:="/mnt/bb_mount_test"}"
 # Unmonitored directory (used to isolate and test Heuristic 1 FS types)
@@ -37,9 +36,7 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-	if [[ -n "${DAEMON_PID}" ]]; then
-		kill -9 "${DAEMON_PID}" 2>/dev/null || true
-	fi
+	cleanup_daemon
 	# Ensure mounts are cleaned up to prevent VM state corruption
 	umount "${TEST_MNT_DIR}" 2>/dev/null || true
 	umount "${TEST_SAFE_DIR}" 2>/dev/null || true
@@ -56,37 +53,6 @@ function provision_env() {
 	}
 	mkdir -p "${TEST_SAFE_DIR}" || {
 		echo "[-] Failed to create unmonitored target directory."
-		exit 1
-	}
-}
-
-function initialize_daemon() {
-	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-
-	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-
-	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
-	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
-	local retries=10
-	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
-		sleep 1
-		((retries--))
-	done
-
-	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-		echo "--- Daemon Output ---"
-		cat "${DAEMON_LOG}"
-		echo "---------------------"
-		exit 1
-	fi
-
-	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-
-	# Pre-emptively enforce module via CLI to ensure active state
-	"${BB_CLI_BIN}" enable mount_secure >/dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."
 		exit 1
 	}
 }
@@ -173,7 +139,7 @@ function verify_ipc_detachment() {
 # ENTRYPOINT
 # ==========================================
 provision_env
-initialize_daemon
+initialize_daemon "mount_secure"
 
 verify_insecure_path_mount
 verify_secure_path_mount

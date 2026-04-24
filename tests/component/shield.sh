@@ -18,13 +18,12 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
-: "${BB_CLI_BIN:="./target/release/cli"}"
-: "${DAEMON_LOG:="/tmp/bb_daemon_shield.log"}"
-
 # Target files explicitly protected by the kernel-space shield module
 : "${CONFIG_TARGET:="/etc/bouclier-bleu/config.toml"}"
 : "${BINARY_TARGET:="/usr/bin/bouclier-bleu-core"}"
@@ -41,9 +40,7 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-	if [[ -n "${DAEMON_PID}" ]]; then
-		kill -9 "${DAEMON_PID}" 2>/dev/null || true
-	fi
+	cleanup_daemon
 	rm -f "${CONFIG_TARGET}" "${BINARY_TARGET}" "${SHIELD_TESTER}" "${SYMLINK_TARGET}" "${DAEMON_LOG}"
 	userdel -r "${TEST_USER}" 2>/dev/null || true
 }
@@ -121,37 +118,6 @@ EOF
 			exit 1
 		}
 	rm -f "${tester_c}"
-}
-
-function initialize_daemon() {
-	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-
-	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-
-	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
-	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
-	local retries=10
-	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
-		sleep 1
-		((retries--))
-	done
-
-	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-		echo "--- Daemon Output ---"
-		cat "${DAEMON_LOG}"
-		echo "---------------------"
-		exit 1
-	fi
-
-	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-
-	# Pre-emptively enforce module via CLI to ensure active state
-	"${BB_CLI_BIN}" enable shield >/dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."
-		exit 1
-	}
 }
 
 function verify_file_tampering() {
@@ -286,7 +252,7 @@ function verify_ipc_detachment() {
 # ENTRYPOINT
 # ==========================================
 provision_env
-initialize_daemon
+initialize_daemon "shield"
 
 verify_file_tampering
 verify_symlink_evasion

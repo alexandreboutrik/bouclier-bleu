@@ -66,10 +66,6 @@ BOUCLIER_PATH_BUFFER_MAP;
 BOUCLIER_MODULE_ALERTS;
 BOUCLIER_MODULE_STATE_MAP;
 
-/* =========================================================================
- * HEURISTIC EVALUATION HELPERS
- * ========================================================================= */
-
 /**
  * is_removable_device() - Hardware Heuristic Evaluator
  * @dev_name: Extracted block device identifier string.

@@ -18,10 +18,12 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
 : "${BB_SVC_SRC:="./systemd/bouclier-bleu.service"}"
 : "${SVC_DEST:="/etc/systemd/system/bouclier-bleu.service"}"
 : "${BIN_DEST:="/usr/bin/bouclier-bleu-core"}"

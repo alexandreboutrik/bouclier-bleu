@@ -18,13 +18,12 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
-: "${BB_CLI_BIN:="./target/release/cli"}"
-: "${DAEMON_LOG:="/tmp/bb_daemon_strict_wx.log"}"
-
 # We use /opt because strict_wx.rs explicitly pre-scans this path at boot.
 : "${TEST_PROT_BIN:="/opt/bb_wx_protected"}"
 : "${TEST_UNPROT_BIN:="/opt/bb_wx_unprotected"}"
@@ -37,9 +36,7 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-	if [[ -n "${DAEMON_PID}" ]]; then
-		kill -9 "${DAEMON_PID}" 2>/dev/null || true
-	fi
+	cleanup_daemon
 	rm -f "${TEST_PROT_BIN}" "${TEST_UNPROT_BIN}" "${C_SOURCE_TMP}" "${DAEMON_LOG}"
 }
 
@@ -94,39 +91,6 @@ EOF
 		echo "[-] 'setfattr' not found. Please install the 'attr' package in the test VM."
 		exit 1
 	fi
-}
-
-function initialize_daemon() {
-	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-
-	# The daemon evaluates the extended attributes of /opt/* synchronously
-	# during init()
-	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-
-	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
-	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
-	local retries=10
-	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
-		sleep 1
-		((retries--))
-	done
-
-	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-		echo "--- Daemon Output ---"
-		cat "${DAEMON_LOG}"
-		echo "---------------------"
-		exit 1
-	fi
-
-	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-
-	# Ensure the module is administratively enabled
-	"${BB_CLI_BIN}" enable strict_wx >/dev/null 2>&1 || {
-		echo "[-] Failed to enable strict_wx via CLI."
-		exit 1
-	}
 }
 
 function verify_unprotected_execution() {
@@ -192,7 +156,7 @@ function verify_ipc_detachment() {
 # ENTRYPOINT
 # ==========================================
 provision_payloads
-initialize_daemon
+initialize_daemon "strict_wx"
 
 verify_unprotected_execution
 verify_protected_execution

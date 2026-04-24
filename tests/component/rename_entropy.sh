@@ -18,13 +18,12 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
-: "${BB_CLI_BIN:="./target/release/cli"}"
-: "${DAEMON_LOG:="/tmp/bb_daemon_rename.log"}"
-
 # We use /var/ because it is in the BPF sensitive directory list
 : "${TEST_DIR_SENSITIVE:="/var/bb_rename_test"}"
 # We use /tmp/ because it is explicitly excluded from the BPF sensitive list
@@ -42,9 +41,7 @@ DAEMON_PID=""
 # ==========================================
 
 function teardown() {
-	if [[ -n "${DAEMON_PID}" ]]; then
-		kill -9 "${DAEMON_PID}" 2>/dev/null || true
-	fi
+	cleanup_daemon
 	rm -rf "${TEST_DIR_SENSITIVE}" "${TEST_DIR_UNMONITORED}" "${DAEMON_LOG}"
 }
 
@@ -66,38 +63,6 @@ function provision_env() {
 		touch "${TEST_DIR_SENSITIVE}/base_file_${i}"
 	done
 	touch "${TEST_DIR_UNMONITORED}/base_file_1"
-}
-
-function initialize_daemon() {
-	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-
-	# Pre-emptively enable the module explicitly via CLI in case config.toml
-	# doesn't have it yet
-	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-
-	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
-	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
-	local retries=10
-	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
-		sleep 1
-		((retries--))
-	done
-
-	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-		echo "--- Daemon Output ---"
-		cat "${DAEMON_LOG}"
-		echo "---------------------"
-		exit 1
-	fi
-
-	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-
-	"${BB_CLI_BIN}" enable rename_entropy >/dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."
-		exit 1
-	}
 }
 
 function verify_low_entropy_rename() {
@@ -355,7 +320,7 @@ function verify_ipc_detachment() {
 # ENTRYPOINT
 # ==========================================
 provision_env
-initialize_daemon
+initialize_daemon "rename_entropy"
 
 verify_low_entropy_rename
 verify_high_entropy_rename

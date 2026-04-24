@@ -18,16 +18,16 @@
 
 set -uo pipefail
 
+# Source the common utilities dynamically relative to the current script
+source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${BB_CORE_BIN:="./target/release/core"}"
-: "${BB_CLI_BIN:="./target/release/cli"}"
 : "${TEST_PAYLOAD:="/tmp/bb_test_payload"}"
 : "${TEST_SYMLINK:="/root/bb_test_symlink"}"
 : "${TEST_UNMONITORED:="/var/crash/bb_test_payload"}"
 : "${TEST_LONG_PATH_BASE:="/tmp/bb_long_path_test"}"
-: "${DAEMON_LOG:="/tmp/bb_daemon_path.log"}"
 : ${BB_DROPPER="/tmp/bb_memfd_dropper"}
 : "${EPERM_EXIT_CODE:=126}"
 
@@ -39,9 +39,7 @@ ORIGINAL_DIR=$(pwd)
 # ==========================================
 
 function teardown() {
-	if [[ -n "${DAEMON_PID}" ]]; then
-		kill -9 "${DAEMON_PID}" 2>/dev/null || true
-	fi
+	cleanup_daemon
 	rm -f "${TEST_PAYLOAD}" "${TEST_SYMLINK}" "${TEST_UNMONITORED}" "${DAEMON_LOG}" "${BB_DROPPER}"
 	cd "${ORIGINAL_DIR}" || true
 }
@@ -147,36 +145,6 @@ EOF
 			exit 1
 		}
 	rm -f "${dropper_c}"
-}
-
-function initialize_daemon() {
-	echo "  [*] Initializing Bouclier Bleu Core Daemon..."
-
-	"${BB_CORE_BIN}" >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-
-	# Dynamically wait for the IPC socket to be ready (up to 10 seconds)
-	# instead of a hardcoded `sleep 2` which causes TOCTOU races on cold boots.
-	local retries=10
-	while [[ ! -S "/var/run/bouclier-bleu/control.sock" ]] && [[ "${retries}" -gt 0 ]]; do
-		sleep 1
-		((retries--))
-	done
-
-	if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		echo "[-] Fatal error: Core daemon failed to bind or crashed instantly."
-		echo "--- Daemon Output ---"
-		cat "${DAEMON_LOG}"
-		echo "---------------------"
-		exit 1
-	fi
-
-	echo "  [+] Daemon bound successfully (PID: ${DAEMON_PID})."
-
-	"${BB_CLI_BIN}" enable exec_block >/dev/null 2>&1 || {
-		echo "[-] Failed to enable the module."
-		exit 1
-	}
 }
 
 function verify_active_blocking() {
@@ -394,7 +362,7 @@ function verify_memfd_prctl_spoofing() {
 # ==========================================
 provision_payload
 provision_memfd_dropper
-initialize_daemon
+initialize_daemon "exec_block"
 
 verify_active_blocking
 verify_ipc_detachment
