@@ -28,6 +28,7 @@ set -uo pipefail
 : "${BB_HELP:=0}"
 
 # Toggle variables for release steps
+: "${BB_PREPARE_CARGO:=0}"
 : "${BB_BUILD_DEB:=0}"
 : "${BB_BUILD_RPM:=0}"
 : "${BB_CREATE_GH_RELEASE:=0}"
@@ -57,6 +58,9 @@ while [ $# -ne 0 ]; do
 	"-version") ;& "-v")
 		BB_VERSION="${2}"
 		shift
+		;;
+	"-prepare")
+		BB_PREPARE_CARGO=1
 		;;
 	"-deb")
 		BB_BUILD_DEB=1
@@ -91,6 +95,7 @@ function print_help() {
 	echo "  -help, -h               Display this help message and exit."
 	echo "  -version, -v            Specify the release version (e.g., 1.0.4)."
 	echo
+	echo "  -prepare                Bump versions in Cargo.toml/README, commit, and push."
 	echo "  -deb                    Build the Ubuntu/Debian .deb package."
 	echo "  -rpm                    Build the Fedora .rpm package."
 	echo "  -gh                     Tag and create the GitHub Release."
@@ -155,6 +160,7 @@ function init_env() {
 }
 
 function prepare_cargo_release() {
+	if [ "${BB_PREPARE_CARGO}" != "1" ]; then return; fi
 	if [ "${BB_HELP}" == "1" ]; then return; fi
 
 	echo -e "\n➤ Checking versions in Cargo.toml files and README.md..."
@@ -244,7 +250,7 @@ function build_deb() {
 	docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/ubuntu ubuntu:24.04 bash -c "
         set -e
         apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems linux-tools-common linux-tools-generic || exit 1
+            curl build-essential clang llvm libelf-dev zlib1g-dev pkg-config ruby ruby-dev rubygems linux-tools-common linux-tools-generic attr || exit 1
 
 		ln -s /usr/lib/linux-tools/*/bpftool /usr/local/bin/bpftool
         
@@ -256,12 +262,14 @@ function build_deb() {
 
 		mkdir -p /tmp/stage/usr/bin
         mkdir -p /tmp/stage/lib/systemd/system
+		mkdir -p /tmp/stage/etc/bouclier-bleu
         cp target/ubuntu/release/core /tmp/stage/usr/bin/bouclier-bleu-core || exit 1
         cp target/ubuntu/release/cli /tmp/stage/usr/bin/bouclier-bleu-cli || exit 1
         cp /app/systemd/bouclier-bleu.service /tmp/stage/lib/systemd/system/ || exit 1
+		cp /app/config.toml /tmp/stage/etc/bouclier-bleu/config.toml || exit 1
 
         gem install fpm || exit 1
-        fpm -s dir -t deb -n ${APP_NAME} -v ${BB_VERSION} -C /tmp/stage . || exit 1
+        fpm -s dir -t deb -n ${APP_NAME} -v ${BB_VERSION} -C /tmp/stage --deb-systemd /app/systemd/bouclier-bleu.service . || exit 1
         mv *.deb /app/dist/ || exit 1
         
         chown -R ${HOST_UID}:${HOST_GID} /app/target/ubuntu /app/dist || exit 1
@@ -278,7 +286,7 @@ function build_rpm() {
 
 	docker run --rm -v "${MAIN_DIR}:/app" -e CARGO_TARGET_DIR=/app/target/fedora fedora:40 bash -c "
         set -e
-        dnf install -y curl make gcc clang llvm elfutils-libelf-devel zlib-devel pkg-config ruby ruby-devel rpm-build bpftool || exit 1
+        dnf install -y curl make gcc clang llvm elfutils-libelf-devel zlib-devel pkg-config ruby ruby-devel rpm-build bpftool attr || exit 1
         
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || exit 1
         source \$HOME/.cargo/env
@@ -287,10 +295,12 @@ function build_rpm() {
         cargo build --release || exit 1
 
 		mkdir -p /tmp/stage/usr/bin
-        mkdir -p /tmp/stage/lib/systemd/system
+        mkdir -p /tmp/stage/usr/lib/systemd/system
+		mkdir -p /tmp/stage/etc/bouclier-bleu
         cp target/fedora/release/core /tmp/stage/usr/bin/bouclier-bleu-core || exit 1
         cp target/fedora/release/cli /tmp/stage/usr/bin/bouclier-bleu-cli || exit 1
-        cp /app/systemd/bouclier-bleu.service /tmp/stage/lib/systemd/system/ || exit 1
+        cp /app/systemd/bouclier-bleu.service /tmp/stage/usr/lib/systemd/system/ || exit 1
+		cp /app/config.toml /tmp/stage/etc/bouclier-bleu/config.toml || exit 1
 
         gem install fpm || exit 1
         fpm -s dir -t rpm -n ${APP_NAME} -v ${BB_VERSION} -C /tmp/stage . || exit 1
