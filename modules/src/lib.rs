@@ -78,10 +78,14 @@ impl<'a> BpfReader<'a> {
 		let null_index = path_buffer.iter().position(|&b| b == 0).unwrap_or(max_len);
 
 		// `from_utf8_lossy` sanitizes invalid byte sequences seamlessly
-		let result = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
+		let raw_string = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
 		self.offset += max_len;
 
-		Ok(result)
+		// Automatically sanitize all kernel strings to prevent log injection
+		// system-wide
+		let sanitized = raw_string.replace(|c: char| !c.is_ascii_graphic() && c != ' ', "?");
+
+		Ok(sanitized)
 	}
 }
 
