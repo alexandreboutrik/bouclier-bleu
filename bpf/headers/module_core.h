@@ -52,7 +52,7 @@
 #define BPF_SAFE_MEMSET(dest, size)                                            \
 	do {                                                                       \
 		volatile __u8 *__ptr = (volatile __u8 *)(dest);                        \
-		for (int __i = 0; __i < (size); __i++) {                               \
+		for (size_t __i = 0; __i < (size_t)(size); __i++) {                    \
 			__ptr[__i] = 0;                                                    \
 		}                                                                      \
 	} while (0)

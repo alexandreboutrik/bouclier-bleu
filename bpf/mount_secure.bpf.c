@@ -113,7 +113,7 @@ static __always_inline bool is_sensitive_path(const char *path, int len) {
 		path[4] == 'i' && path[5] == 'a')
 		return true; // /media
 
-	if (len >= 11 && path[1] == 'r' && path[2] == 'u' && path[3] == 'n' &&
+	if (len >= 10 && path[1] == 'r' && path[2] == 'u' && path[3] == 'n' &&
 		path[4] == '/' && path[5] == 'm' && path[6] == 'e' && path[7] == 'd' &&
 		path[8] == 'i' && path[9] == 'a')
 		return true; // /run/media
@@ -134,7 +134,7 @@ static __always_inline bool fallback_dentry_check(const struct path *dst_path) {
 	struct dentry *d = BPF_CORE_READ(dst_path, dentry);
 
 #pragma unroll
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 8; i++) {
 		if (!d)
 			break;
 
@@ -179,13 +179,19 @@ static __always_inline void dispatch_mount_alert(const char *dev_name,
 	 * local eBPF stack variable to prevent verifier/JIT issues.
 	 */
 	if (fs_type) {
-		bpf_probe_read_kernel_str(event->fs_type, sizeof(event->fs_type),
-								  fs_type);
+		if (bpf_probe_read_kernel_str(event->fs_type, sizeof(event->fs_type),
+									  fs_type) <= 0)
+			event->fs_type[0] = 'N';
+		event->fs_type[1] = '/';
+		event->fs_type[2] = 'A';
 	}
 
 	if (dev_name) {
-		bpf_probe_read_kernel_str(event->dev_name, sizeof(event->dev_name),
-								  dev_name);
+		if (bpf_probe_read_kernel_str(event->dev_name, sizeof(event->dev_name),
+									  dev_name) <= 0)
+			event->dev_name[0] = 'N';
+		event->dev_name[1] = '/';
+		event->dev_name[2] = 'A';
 	} else {
 		event->dev_name[0] = 'N';
 		event->dev_name[1] = '/';
@@ -337,11 +343,16 @@ int BPF_PROG(mount_secure_move_mount, const struct path *from_path,
 	 * internal 'struct mount', which perfectly preserves the original
 	 * mnt_devname.
 	 */
-	size_t mnt_offset =
-		__builtin_preserve_field_info(((struct mount *)0)->mnt, 0);
-	struct mount *real_mount =
-		(struct mount *)((void *)from_path->mnt - mnt_offset);
-	dev_name = BPF_CORE_READ(real_mount, mnt_devname);
+	if (bpf_core_field_exists(((struct mount *)0)->mnt_devname)) {
+		size_t mnt_offset =
+			__builtin_preserve_field_info(((struct mount *)0)->mnt, 0);
+		struct mount *real_mount =
+			(struct mount *)((void *)from_path->mnt - mnt_offset);
+		dev_name = BPF_CORE_READ(real_mount, mnt_devname);
+	} else if (sb) {
+		/* Fallback: VFS Superblock ID if struct mount is inaccessible */
+		dev_name = BPF_CORE_READ(sb, s_id);
+	}
 
 	// bpf_d_path is NOT allowlisted for move_mount. Pass `false` to compile it
 	// out.
