@@ -350,7 +350,7 @@ function create_github_release() {
 		echo "[INFO] GitHub Release v${BB_VERSION} already exists. Skipping creation."
 	else
 		gh release create "v${BB_VERSION}" "${DIST_DIR}"/* \
-			--title "Release v${BB_VERSION}" \
+			--title "v${BB_VERSION}" \
 			--generate-notes || {
 			echo "Failed to create GitHub release. Exiting."
 			exit 1
