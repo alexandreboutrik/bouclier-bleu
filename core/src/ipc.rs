@@ -71,10 +71,37 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
 	if let Ok(meta) = fs::metadata(SOCKET_DIR) {
 		if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
 			eprintln!(
-				"FATAL: IPC directory {} exists but has insecure permissions or ownership.",
+				"Bouclier Bleu [WARNING]: IPC directory {} has insecure permissions (Potential Pre-Staging Attack). Auto-remediating...",
 				SOCKET_DIR
 			);
-			return;
+
+			/*
+			 * NUKE AND PAVE
+			 * Wipe the tainted directory to destroy any pre-staged sockets,
+			 * symlinks, or open file descriptors.
+			 */
+			if let Err(e) = fs::remove_dir_all(SOCKET_DIR) {
+				eprintln!(
+					"FATAL: Failed to wipe compromised IPC directory during remediation: {}",
+					e
+				);
+				return;
+			}
+
+			// Rebuild the directory cleanly
+			if let Err(e) = DirBuilder::new()
+				.recursive(true)
+				.mode(0o700)
+				.create(SOCKET_DIR)
+			{
+				eprintln!(
+					"FATAL: Failed to recreate secure IPC directory post-remediation: {}",
+					e
+				);
+				return;
+			}
+
+			eprintln!("Bouclier Bleu [INFO]: IPC directory securely rebuilt.");
 		}
 	} else {
 		eprintln!("FATAL: Failed to verify IPC directory metadata.");
