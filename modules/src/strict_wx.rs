@@ -77,7 +77,7 @@ define_security_module!(
 		}
 
 		// Apply a 25% safety buffer for future installations, with a fallback
-		// floor of 1024
+		// floor of 2048
 		let safe_capacity = ((count as f64 * 1.25) as u32).max(2048);
 
 		let mut caps = std::collections::HashMap::new();

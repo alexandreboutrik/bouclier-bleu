@@ -2,6 +2,7 @@
 #define __MODULE_CORE_H
 
 #include "../include/vmlinux.h"
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 
 #ifndef PATH_MAX
@@ -71,6 +72,28 @@ static __always_inline int is_module_active(void *map) {
 	__u32 key = 0;
 	__u32 *active = bpf_map_lookup_elem(map, &key);
 	return (active && *active == 1);
+}
+
+/**
+ * get_global_uid() - Safely resolve the true Global UID
+ *
+ * Standard `bpf_get_current_uid_gid()` evaluates the UID within the current
+ * executing user namespace. This introduces a critical blind spot where an
+ * unprivileged containerized process could map its local UID to 0, bypassing
+ * LSM heuristics that rely on simple root checks.
+ *
+ * This helper utilizes CO-RE to safely traverse the kernel task structure and
+ * extract the definitive, namespace-agnostic global UID.
+ *
+ * Return: The global __u32 UID of the current task.
+ */
+static __always_inline __u32 get_global_uid(void) {
+	struct task_struct *task = bpf_get_current_task_btf();
+	/*
+	 * Traverse task_struct -> cred -> uid -> val
+	 * Resolves the underlying kuid_t wrapper to extract the raw integer.
+	 */
+	return (__u32)BPF_CORE_READ(task, cred, uid.val);
 }
 
 #endif /* __MODULE_CORE_H */

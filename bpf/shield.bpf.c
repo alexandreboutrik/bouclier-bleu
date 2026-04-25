@@ -86,7 +86,8 @@ int BPF_PROG(shield_file_open, struct file *file) {
 
 	unsigned int f_flags = file->f_flags;
 
-	/* Fast-Path Deferral:
+	/*
+	 * Fast-Path Deferral
 	 * If the file is only being opened for reading without truncation, it's
 	 * safe. We allow the operation to proceed without incurring string
 	 * resolution overhead.
@@ -95,12 +96,13 @@ int BPF_PROG(shield_file_open, struct file *file) {
 		return 0;
 	}
 
-	/* UID Fast-Path
+	/*
+	 * UID Fast-Path
 	 * System daemons (root) are permitted to modify files. Returning early
 	 * here saves us from executing expensive BPF_CORE_READs and Map Lookups
 	 * for legitimate, high-frequency system I/O.
 	 */
-	if ((__u32)bpf_get_current_uid_gid() == 0) {
+	if (get_global_uid() == 0) {
 		return 0;
 	}
 
@@ -128,7 +130,8 @@ int BPF_PROG(shield_file_open, struct file *file) {
 			event->pid = bpf_get_current_pid_tgid() >> 32;
 			event->action_type = ACTION_FILE_TAMPER;
 
-			/* Telemetry Fallback: Best-effort path resolution for the
+			/*
+			 * Telemetry Fallback: Best-effort path resolution for the
 			 * alert log. If the path exceeds 4096 bytes (-ENAMETOOLONG),
 			 * we skip resolution but still block the event and send the
 			 * alert, eliminating the fail-open truncation vulnerability.
@@ -163,7 +166,7 @@ int BPF_PROG(shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
 		return 0;
 	}
 
-	if ((__u32)bpf_get_current_uid_gid() != 0) {
+	if (get_global_uid() != 0) {
 		struct shield_alert *event =
 			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
 		if (event) {
@@ -197,7 +200,7 @@ int BPF_PROG(shield_syslog, int type) {
 		return 0;
 	}
 
-	if ((__u32)bpf_get_current_uid_gid() != 0) {
+	if (get_global_uid() != 0) {
 		struct shield_alert *event =
 			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
 		if (event) {
