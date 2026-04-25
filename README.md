@@ -5,7 +5,7 @@
 <h1 align="center">Bouclier Bleu</h1>
 
 <div align="center">
-<img src="https://img.shields.io/badge/version-v0.4.2--alpha-blue">
+<img src="https://img.shields.io/badge/version-v0.5.0--alpha-blue">
 <img src="https://img.shields.io/badge/license-GPL--2.0--only-424242">
 <img src="https://img.shields.io/badge/license-Apache--2.0-a8afb3">
 </div>
@@ -84,6 +84,12 @@ rename_entropy = true
 
 > [!NOTE]
 > While this file dictates the default boot state, you can dynamically override these configurations at runtime without restarting the daemon by using the cli Control Plane (e.g., `sudo cli disable rename_entropy`).
+
+## Telemetry & SIEM Integration
+
+`Bouclier Bleu` is built with a "zero-code" enterprise integration philosophy. Instead of requiring a custom log shipper or complex networking configurations, the core daemon automatically formats all security events as structured NDJSON (Newline Delimited JSON) and streams them securely to a local file : `/var/log/bouclier-bleu/alerts.json`.
+
+This decoupled architecture allows you to natively ingest Bouclier Bleu's telemetry into any existing enterprise SIEM or observability stack (e.g., Splunk Universal Forwarder, Datadog Agent, Elastic Filebeat, Promtail) simply by pointing your existing agent at this file.
 
 ## Testing Pipeline
 
