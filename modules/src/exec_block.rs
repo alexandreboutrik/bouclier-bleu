@@ -22,7 +22,7 @@ use walkdir::WalkDir;
 /// Represents an attempt to execute a binary from a world-writable directory.
 /// Uses safe, natively-owned Rust types to prevent lifecycle management
 /// issues.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ExecAlert {
 	pub pid: u32,
 	pub path: String,

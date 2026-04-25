@@ -28,7 +28,7 @@ use walkdir::WalkDir;
 /// a primary indicator of ransomware encryption phases.
 /// Uses safe, natively-owned Rust types to prevent lifecycle management
 /// issues.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct RenameAlert {
 	pub pid: u32,
 	pub ppid: u32,

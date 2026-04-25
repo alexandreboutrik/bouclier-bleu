@@ -20,10 +20,11 @@
 //! decoupling specific defensive heuristics from the core eBPF routing engine.
 
 use rustix::fs::{openat, Mode, OFlags, CWD};
-use std::fs::{File, Metadata};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod exec_block;
 pub mod mount_secure;
@@ -240,8 +241,18 @@ macro_rules! define_security_module {
                  */
                 match $parser(event_data) {
                     Ok(alert) => {
-                        // Pass the validated, purely safe Rust struct to the
-                        // logic block
+                        /*
+                         * NDJSON Pipeline
+                         * Automatically intercept the parsed, safe Rust struct
+                         * and forward it to the standardized SIEM JSON log
+                         * before executing localized remediation closures.
+                         * This guarantees zero-code integration for all
+                         * modules.
+                         */
+                        crate::emit_siem_event($slug, &alert);
+
+                        // Pass the validated payload to the localized logic
+                        // block
                         $handler(alert);
                     }
                     Err(e) => {
@@ -277,6 +288,130 @@ macro_rules! define_security_module {
             }
         }
     };
+}
+
+/*
+ * Decoupled Telemtry Sink
+ * Global lock for the NDJSON log file. Utilizing OnceLock ensures the file
+ * descriptor is lazily initialized exactly once across all asynchronous worker
+ * threads, while the Mutex prevents interleaved JSON objects during concurrent
+ * high-frequency attack bursts.
+ */
+static SIEM_LOG_SINK: OnceLock<Mutex<File>> = OnceLock::new();
+
+/// NDJSON Forwarding Engine
+///
+/// Wraps the module-specific struct in a standardized envelope containing
+/// SIEM-critical metadata (ISO-like timestamps, source identifiers) and
+/// flushes it to disk.
+pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
+	let file_mutex = SIEM_LOG_SINK.get_or_init(|| {
+        let log_dir = "/var/log/bouclier-bleu";
+
+        /*
+         * TOCTOU & Privilege Escalation Mitigation
+         * We atomically create the directory with root-only permissions
+         * (0o700) to prevent unprivileged users from staging symlink attacks
+         * within thelog directory.
+         */
+        if let Err(e) = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(log_dir)
+        {
+            eprintln!("Bouclier Bleu [Warning]: Failed to securely create log directory: {}", e);
+        }
+
+        /*
+         * Pre-Existing Directory Validation & Auto-Remediation
+         * Validates that the directory wasn't pre-staged by an attacker with 
+         * wide-open permissions. Instead of panicking (which allows a trivial 
+         * Denial of Service), we auto-remediate by wiping the tainted
+         * workspace.
+         */
+        if let Ok(meta) = std::fs::metadata(log_dir) {
+            if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
+                eprintln!(
+                    "Bouclier Bleu [WARNING]: Log directory {} has insecure permissions (Potential Pre-Staging Attack). Auto-remediating...",
+                    log_dir
+                );
+
+                /*
+                 * "Nuke and Pave"
+                 * We do not just `chmod` the directory, because the attacker 
+                 * might have already created `alerts.json` and kept an open 
+                 * file descriptor to it to siphon logs. We destroy the entire 
+                 * directory tree to guarantee state purity.
+                 */
+                if let Err(e) = std::fs::remove_dir_all(log_dir) {
+                    panic!("CRITICAL: Failed to wipe compromised log directory during remediation: {}", e);
+                }
+
+                // Rebuild the directory cleanly
+                if let Err(e) = std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(log_dir)
+                {
+                    panic!("CRITICAL: Failed to recreate secure log directory post-remediation: {}", e);
+                }
+
+                eprintln!("Bouclier Bleu [INFO]: Log directory securely rebuilt.");
+            }
+        } else {
+            panic!("CRITICAL: Failed to verify log directory metadata.");
+        }
+
+        /*
+         * Strict Open Controls
+         * .mode(0o600): Ensures only root can read the telemetry data.
+         * .custom_flags(O_NOFOLLOW): Completely neutralizes symlink swapping 
+         * attacks by forcing the kernel to fail the open() syscall if
+         * alerts.json is a symbolic link.
+         */
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(OFlags::NOFOLLOW.bits() as i32)
+            .open(format!("{}/alerts.json", log_dir))
+            .expect("CRITICAL: Failed to open SIEM telemetry sink securely.");
+
+        Mutex::new(file)
+    });
+
+	/*
+	 * Standardized SIEM Envelope
+	 * We use a flattened schema so the resulting JSON is a single, clean layer
+	 * without nested `alert: { ... }` blocks, which makes indexing in Splunk
+	 * or Elasticsearch significantly cheaper and faster.
+	 */
+	#[derive(serde::Serialize)]
+	struct EnvelopedAlert<'a, A: serde::Serialize> {
+		#[serde(rename = "@timestamp")]
+		timestamp_ms: u128,
+		event_source: &'a str,
+		#[serde(flatten)]
+		payload: &'a A,
+	}
+
+	let timestamp_ms = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_millis();
+
+	let envelope = EnvelopedAlert {
+		timestamp_ms,
+		event_source: module_slug,
+		payload: alert,
+	};
+
+	// Serialize and write to disk
+	if let Ok(json_string) = serde_json::to_string(&envelope) {
+		if let Ok(mut file) = file_mutex.lock() {
+			let _ = writeln!(file, "{}", json_string);
+		}
+	}
 }
 
 /// Centralized Hardware Key Generator

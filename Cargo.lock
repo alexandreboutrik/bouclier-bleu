@@ -429,6 +429,8 @@ version = "0.4.2"
 dependencies = [
  "libbpf-rs",
  "rustix 0.38.44",
+ "serde",
+ "serde_json",
  "sysinfo",
  "walkdir",
  "xattr",

@@ -19,7 +19,7 @@
 use crate::{define_security_module, BpfReader};
 
 /// Telemetry payload yielded by the `mount_secure` BPF hook.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct MountAlert {
 	pub pid: u32,
 	pub dev_name: String,

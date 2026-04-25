@@ -19,7 +19,7 @@ use walkdir::WalkDir;
 use xattr::FileExt;
 
 /// Telemetry payload yielded by the `strict_wx` BPF hook.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct StrictWxAlert {
 	pub pid: u32,
 	pub syscall: String,

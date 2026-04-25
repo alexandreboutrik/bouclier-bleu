@@ -20,7 +20,7 @@ use crate::{define_security_module, BpfReader};
 ///
 /// Captures unprivileged attempts to modify the EDR configuration, tamper
 /// with eBPF subsystem links, or read sensitive kernel ring buffer logs.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ShieldAlert {
 	pub pid: u32,
 	pub action_type: u32,
