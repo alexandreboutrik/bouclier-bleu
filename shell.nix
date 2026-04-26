@@ -13,7 +13,7 @@ pkgs.mkShell {
     #rust-analyzer
 
     # C/eBPF Compilers and Tools
-	bpftools
+	bpftools jq
     clang
     llvm
     pkg-config
