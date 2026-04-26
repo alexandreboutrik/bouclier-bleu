@@ -1,9 +1,35 @@
-# Bouclier Bleu Core Configuration
+# =============================================================================
+# Bouclier Bleu - Core Engine Configuration
+# =============================================================================
+# This configuration file dictates the initial enforcement state of the EDR 
+# upon daemon startup.
+#
+# For a comprehensive list of all available defense modules, their eBPF 
+# hook points, and technical specifications, please consult: docs/MODULES.md
+# =============================================================================
 
 [modules]
-# Modules explicitly enabled at startup.
-# Any module not listed here will be loaded but remain completely dormant 
-# (returning 0 in the kernel) until manually enabled via the CLI.
-exec_block = true
+# -----------------------------------------------------------------------------
+# Module Activation Registry
+# -----------------------------------------------------------------------------
+# Define which security modules are actively enforcing at boot. 
+#
+# Any module omitted from this list (or explicitly set to 'false') is safely 
+# loaded into kernel memory but remains completely dormant. Dormant modules 
+# utilize an eBPF fast-path (returning 0) to bypass logic evaluation entirely 
+# until they are dynamically enabled via the Control Plane CLI.
+
+# Self-Defense Architecture (Protects EDR configuration and binaries)
 shield = true
+
+# Untrusted Path Execution Prevention (Blocks execution from /tmp, /dev/shm)
+exec_block = true
+
+# Removable Media Neutralizer (Enforces MS_NOEXEC/MS_NOSUID on external mounts)
 mount_secure = true
+
+# Ransomware Rename Entropy Monitor (Analyzes filesystem encryption patterns)
+# rename_entropy = false
+
+# Strict Write XOR Execute (W^X) (Prevents in-memory shellcode staging)
+# strict_wx = false

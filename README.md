@@ -41,7 +41,7 @@ Each "defense capability" is implemented as a standalone module. A complete modu
 
 `Bouclier Bleu` implements numerous modules such as `rename_entropy`, `strict_wx`, and `shield`. For documentation on active heuristics, their specific eBPF hooks, and technical implementation details, please refer to [docs/MODULES.md](docs/MODULES.md).
 
-## Compilation & Usage
+## Installation
 
 > [!IMPORTANT]  
 > You must be running Linux kernel version **5.12 or higher** to support the `renamedata` structure and `bpf_d_path` execution paths. Additionally, your kernel must support BPF Security Modules (`CONFIG_BPF_LSM=y`), which may require enabling it at boot by appending `lsm=landlock,lockdown,yama,apparmor,bpf` to your GRUB boot parameters.
@@ -49,22 +49,18 @@ Each "defense capability" is implemented as a standalone module. A complete modu
 > [!NOTE]
 > Pre-compiled packages `.deb` (Ubuntu/Debian) and `.rpm` (Fedora/RHEL) are available on the [GitHub Releases](https://github.com/alexandreboutrik/bouclier-bleu/releases) page. If you just want to install and use the NGAV/EDR, you do not need to build it from source.
 
+If you prefer to compile the EDR from source, or are using a distribution outside of the Debian/RedHat families, we provide an automated installation script. This script compiles the Rust and eBPF binaries, provisions the `/etc/` directories, and natively registers the daemon with either `systemd` or `OpenRC`.
+
 ```bash
 # If using NixOS, load the declarative dev environment first
 nix-shell
 
-# Compile the eBPF C code and Rust userland binaries
-cargo build --release
-
 # The core daemon requires root to load BPF programs
-sudo ./target/release/core
+./scripts/install.sh
 ```
 
-We also include an automated release pipeline (`scripts/release.sh`) for cross-distribution packaging (`via fpm`), GitHub Releases, and package manager repository updates.
-
-```bash
-./scripts/release.sh -h
-```
+> [!NOTE]
+> For maintainers : We also include an automated release pipeline (`scripts/release.sh`) for cross-distribution packaging (`via fpm`), GitHub Releases, and package manager repository updates. Run `./scripts/release.sh -h` for more information.
 
 ## Configuration
 
@@ -72,14 +68,11 @@ We also include an automated release pipeline (`scripts/release.sh`) for cross-d
 
 ```bash
 [modules]
-# Enable world-writable execution blocking
+# Untrusted Path Execution Prevention (Blocks execution from /tmp, /dev/shm)
 exec_block = true
 
-# Enable ransomware entropy heuristics
+# Ransomware Rename Entropy Monitor (Analyzes filesystem encryption patterns)
 rename_entropy = true
-
-# Future modules can be toggled here
-# file_mprotect = false
 ```
 
 > [!NOTE]
