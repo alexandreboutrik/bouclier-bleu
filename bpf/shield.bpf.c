@@ -175,7 +175,8 @@ int BPF_PROG(shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
 			event->pid = bpf_get_current_pid_tgid() >> 32;
 			event->action_type = ACTION_BPF_TAMPER;
 			char bpf_target[] = "bpf() syscall invocation";
-			__builtin_memcpy(event->target, bpf_target, sizeof(bpf_target));
+			bpf_probe_read_kernel_str(event->target, sizeof(event->target),
+									  bpf_target);
 			bpf_ringbuf_submit(event, 0);
 		}
 		bpf_printk(

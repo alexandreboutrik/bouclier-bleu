@@ -177,6 +177,9 @@ static __always_inline void dispatch_mount_alert(const char *dev_name,
 	 * Invalid BPF Helper Memory Read Fix
 	 * Read directly from the kernel-space pointer rather than copying from a
 	 * local eBPF stack variable to prevent verifier/JIT issues.
+	 * Explicit Null-Termination : guarantees the Rust BpfReader in userland
+	 * will not parse out-of-bounds garbage memory into the telemetry payload
+	 * if the initial kernel read fails.
 	 */
 	if (fs_type) {
 		if (bpf_probe_read_kernel_str(event->fs_type, sizeof(event->fs_type),
@@ -184,6 +187,7 @@ static __always_inline void dispatch_mount_alert(const char *dev_name,
 			event->fs_type[0] = 'N';
 		event->fs_type[1] = '/';
 		event->fs_type[2] = 'A';
+		event->fs_type[3] = '\0';
 	}
 
 	if (dev_name) {
@@ -192,10 +196,12 @@ static __always_inline void dispatch_mount_alert(const char *dev_name,
 			event->dev_name[0] = 'N';
 		event->dev_name[1] = '/';
 		event->dev_name[2] = 'A';
+		event->dev_name[3] = '\0';
 	} else {
 		event->dev_name[0] = 'N';
 		event->dev_name[1] = '/';
 		event->dev_name[2] = 'A';
+		event->dev_name[3] = '\0';
 	}
 
 	if (path_buf && path_buf[0] != '\0') {
