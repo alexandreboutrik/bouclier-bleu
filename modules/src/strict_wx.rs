@@ -102,37 +102,36 @@ define_security_module!(
 
 			for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
 				if entry.file_type().is_file() {
-					// Utilizing the `xattr` crate to pull extended filesystem
-					// metadata safely
-					if let Ok(Some(xattr_val)) = xattr::get(entry.path(), "user.bouclier.strict_wx") {
-						if xattr_val == b"1" {
-							/*
-							 * TOCTOU Race Condition Mitigation
-							 * Between the fast-path check and metadata
-							 * extraction, an attacker could swap a symlink. We
-							 * secure this by acquiring a File Descriptor and
-							 * executing all subsequent checks directly against
-							 * the descriptor.
-							 */
-							if let Ok(file) = std::fs::File::open(entry.path()) {
-								if let Ok(Some(fd_xattr)) = file.get_xattr("user.bouclier.strict_wx") {
-									if fd_xattr == b"1" {
-										if let Ok(metadata) = file.metadata() {
-											let key_bytes = crate::generate_hardware_key(&metadata);
+					/*
+					 * TOCTOU Race Condition Mitigation
+					 * By avoiding the path-based xattr::get entirely and
+					 * opening the file descriptor directly with O_NOFOLLOW, we
+					 * completely neutralize the window where an attacker could
+					 * swap the target binary for a malicious symlink.
+					 */
+					if let Ok(fd) = rustix::fs::openat(
+						rustix::fs::CWD,
+						entry.path(),
+						rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+						rustix::fs::Mode::empty(),
+					) {
+						let file = std::fs::File::from(fd);
+						if let Ok(Some(fd_xattr)) = file.get_xattr("user.bouclier.strict_wx") {
+							if fd_xattr == b"1" {
+								if let Ok(metadata) = file.metadata() {
+									let key_bytes = crate::generate_hardware_key(&metadata);
 
-											/*
-											 * Strict Map Exhaustion Handling
-											 * Catch and crash early if the BPF
-											 * map runs out of bounds rather
-											 * than silently failing open.
-											 */
-											if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
-												return Err(format!("CRITICAL: strict_wx_binaries map failed to update: {}", e));
-											}
-
-											println!("Bouclier Bleu [Setup]: W^X strict enforcement activated for {:?}", entry.path());
-										}
+									/*
+									 * Strict Map Exhaustion Handling
+									 * Catch and crash early if the BPF
+									 * map runs out of bounds rather
+									 * than silently failing open.
+									 */
+									if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
+										return Err(format!("CRITICAL: strict_wx_binaries map failed to update: {}", e));
 									}
+
+									println!("Bouclier Bleu [Setup]: W^X strict enforcement activated for {:?}", entry.path());
 								}
 							}
 						}

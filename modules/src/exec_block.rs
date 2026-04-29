@@ -82,7 +82,18 @@ define_security_module!(
 		let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
 
 		for path in target_paths {
-			for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+			/*
+			 * Traversal Depth Constraint
+			 * Restricts recursion to 20 levels and ignores symlinks to prevent
+			 * infinite loops or extreme startup latency caused by malicious
+			 * nesting.
+			 */
+		let safe_walker = WalkDir::new(path)
+				.max_depth(20)
+				.follow_links(false)
+				.into_iter();
+
+			for entry in safe_walker.filter_map(|e| e.ok()) {
 				if entry.file_type().is_dir() {
 					count += 1;
 				}
