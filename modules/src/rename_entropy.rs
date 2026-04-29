@@ -127,7 +127,20 @@ fn neutralize_threat_tree(target_ppid: u32) {
 	}
 
 	if let Some(parent) = sys.process(target) {
-		parent.kill_with(Signal::Kill);
+		/*
+		 * PID Recycling Race Condition Mitigation
+		 * The Linux kernel aggressively recycles PIDs. We validate the process
+		 * start time to ensure we aren't killing a newly spawned, innocent
+		 * process that just inherited the orchestrator's PID.
+		 */
+		if parent.start_time() < sysinfo::System::uptime() {
+			parent.kill_with(Signal::Kill);
+		} else {
+			eprintln!(
+				"Bouclier Bleu [WARNING]: Aborted orchestrator termination. PID {} was recycled.",
+				target
+			);
+		}
 	}
 }
 
@@ -150,8 +163,17 @@ define_security_module!(
 		let mut tracker = match get_tracker().lock() {
 			Ok(guard) => guard,
 			Err(poisoned) => {
+				/*
+				 * State Corruption Prevention
+				 * If a thread panics while holding the lock, the map is likely
+				 * in a torn or inconsistent state. We explicitly clear the map
+				 * upon recovery to avoid evaluating heuristics on corrupted
+				 * data.
+				 */
 				eprintln!("Bouclier Bleu [Warning]: Strike tracker mutex was poisoned. Recovering state.");
-		poisoned.into_inner()
+				let mut recovered = poisoned.into_inner();
+				recovered.clear();
+				recovered
 			}
 		};
 
@@ -198,21 +220,21 @@ define_security_module!(
 			strike.first_strike = now;
 		} else {
 			strike.count += 1;
-		}
 
-		if strike.count >= 3 {
-			println!(
-				"Bouclier Bleu [FATAL]: PPID {} crossed heuristic threshold (3 strikes/2s). Executing tree eradication.",
-				alert.ppid
-			);
+			if strike.count >= 3 {
+				println!(
+					"Bouclier Bleu [FATAL]: PPID {} crossed heuristic threshold (3 strikes/2s). Executing tree eradication.",
+					alert.ppid
+				);
 
-			neutralize_threat_tree(alert.ppid);
+				neutralize_threat_tree(alert.ppid);
 
-			/*
-			 * Flush localized state to prevent ghost-strikes if the OS recycles
-			 * the PID for a future, benign process.
-			 */
-			tracker.remove(&alert.ppid);
+				/*
+				* Flush localized state to prevent ghost-strikes if the OS
+				* recycles the PID for a future, benign process.
+				*/
+				tracker.remove(&alert.ppid);
+			}
 		}
 	},
 	capacities: || -> std::collections::HashMap<String, u32> {
