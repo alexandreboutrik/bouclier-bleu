@@ -342,9 +342,13 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                  * might have already created `alerts.json` and kept an open 
                  * file descriptor to it to siphon logs. We destroy the entire 
                  * directory tree to guarantee state purity.
+                 * Graceful Degradation : Instead of crashing the daemon and
+                 * disabling all protection modules via a panic, we fall back
+                 * to /dev/null if remediation fails.
                  */
                 if let Err(e) = std::fs::remove_dir_all(log_dir) {
-                    panic!("CRITICAL: Failed to wipe compromised log directory during remediation: {}", e);
+                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to wipe compromised log directory: {}. Sinking telemetry to /dev/null.", e);
+                    return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
                 }
 
                 // Rebuild the directory cleanly
@@ -353,13 +357,15 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                     .mode(0o700)
                     .create(log_dir)
                 {
-                    panic!("CRITICAL: Failed to recreate secure log directory post-remediation: {}", e);
+                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to recreate secure log directory: {}. Sinking telemetry to /dev/null.", e);
+                    return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
                 }
 
                 eprintln!("Bouclier Bleu [INFO]: Log directory securely rebuilt.");
             }
         } else {
-            panic!("CRITICAL: Failed to verify log directory metadata.");
+            eprintln!("Bouclier Bleu [CRITICAL]: Failed to verify log directory metadata. Sinking telemetry to /dev/null.");
+            return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
         }
 
         /*
