@@ -134,7 +134,7 @@ static __always_inline bool fallback_dentry_check(const struct path *dst_path) {
 	struct dentry *d = BPF_CORE_READ(dst_path, dentry);
 
 #pragma unroll
-	for (int i = 0; i < 8; i++) {
+	for (int i = 0; i < 32; i++) {
 		if (!d)
 			break;
 
@@ -183,20 +183,22 @@ static __always_inline void dispatch_mount_alert(const char *dev_name,
 	 */
 	if (fs_type) {
 		if (bpf_probe_read_kernel_str(event->fs_type, sizeof(event->fs_type),
-									  fs_type) <= 0)
+									  fs_type) <= 0) {
 			event->fs_type[0] = 'N';
-		event->fs_type[1] = '/';
-		event->fs_type[2] = 'A';
-		event->fs_type[3] = '\0';
+			event->fs_type[1] = '/';
+			event->fs_type[2] = 'A';
+			event->fs_type[3] = '\0';
+		}
 	}
 
 	if (dev_name) {
 		if (bpf_probe_read_kernel_str(event->dev_name, sizeof(event->dev_name),
-									  dev_name) <= 0)
+									  dev_name) <= 0) {
 			event->dev_name[0] = 'N';
-		event->dev_name[1] = '/';
-		event->dev_name[2] = 'A';
-		event->dev_name[3] = '\0';
+			event->dev_name[1] = '/';
+			event->dev_name[2] = 'A';
+			event->dev_name[3] = '\0';
+		}
 	} else {
 		event->dev_name[0] = 'N';
 		event->dev_name[1] = '/';
