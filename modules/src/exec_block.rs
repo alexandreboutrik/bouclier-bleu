@@ -93,9 +93,18 @@ define_security_module!(
 				.follow_links(false)
 				.into_iter();
 
-			for entry in safe_walker.filter_map(|e| e.ok()) {
-				if entry.file_type().is_dir() {
-					count += 1;
+			for entry in safe_walker {
+				match entry {
+					Ok(e) => {
+						if e.file_type().is_dir() {
+							count += 1;
+						}
+					}
+					Err(e) => {
+						if e.io_error().map(|io| io.kind() == std::io::ErrorKind::PermissionDenied).unwrap_or(false) {
+							eprintln!("Bouclier Bleu [Warning]: Permission denied traversing {}: {}", path, e);
+						}
+					}
 				}
 			}
 		}

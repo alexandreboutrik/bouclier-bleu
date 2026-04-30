@@ -86,6 +86,16 @@ impl<'a> BpfReader<'a> {
 		// system-wide
 		let sanitized = raw_string.replace(|c: char| !c.is_ascii_graphic() && c != ' ', "?");
 
+		// Forensic Preservation Heuristic
+		// If non-printable characters were stripped, we alert the SIEM stream
+		// so operators know the original filename was mangled (e.g. evasive malware).
+		if sanitized.len() != raw_string.len() {
+			eprintln!(
+				"Bouclier Bleu [Warning]: Sanitized {} non-printable chars from kernel string",
+				raw_string.len() - sanitized.len()
+			);
+		}
+
 		Ok(sanitized)
 	}
 }
@@ -375,13 +385,19 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
          * attacks by forcing the kernel to fail the open() syscall if
          * alerts.json is a symbolic link.
          */
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .custom_flags(OFlags::NOFOLLOW.bits() as i32)
             .open(format!("{}/alerts.json", log_dir))
-            .expect("CRITICAL: Failed to open SIEM telemetry sink securely.");
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Bouclier Bleu [CRITICAL]: Failed to open SIEM sink: {}. Using /dev/null fallback.", e);
+                OpenOptions::new().write(true).open("/dev/null").expect("Failed to open /dev/null fallback")
+            }
+        };
 
         Mutex::new(file)
     });
