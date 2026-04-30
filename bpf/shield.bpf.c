@@ -72,6 +72,35 @@ BOUCLIER_MODULE_STATE_MAP;
 BOUCLIER_PROTECTED_FILES_MAP;
 
 /*
+ * Privilege Enforcement
+ * Standardizes the execution lifecycle for access-control hooks.
+ * Handles fast-path root deferral, securely reserves and zero-initializes
+ * the ring buffer payload (preventing verifier state leaks), and dispatches
+ * the telemetry event.
+ */
+#define BOUCLIER_ENFORCE_PRIVILEGE(action, target_str, log_msg)                \
+	if (!is_module_active(&state_map)) {                                       \
+		return 0;                                                              \
+	}                                                                          \
+                                                                               \
+	if (get_global_uid() != 0) {                                               \
+		struct shield_alert *event =                                           \
+			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);                   \
+		if (event) {                                                           \
+			BPF_SAFE_MEMSET(event, sizeof(*event));                            \
+                                                                               \
+			event->pid = bpf_get_current_pid_tgid() >> 32;                     \
+			event->action_type = (action);                                     \
+			char t_str[] = target_str;                                         \
+			bpf_probe_read_kernel_str(event->target, sizeof(t_str), t_str);    \
+			bpf_ringbuf_submit(event, 0);                                      \
+		}                                                                      \
+		bpf_printk(log_msg);                                                   \
+		return -EPERM;                                                         \
+	}                                                                          \
+	return 0;
+
+/*
  * Defense Heuristic : Architecture Tampering (Config & Binary)
  * Hooks into the file opening lifecycle to enforce an immutable O_RDONLY
  * policy for critical EDR files for all unprivileged users. This acts as a
@@ -162,29 +191,9 @@ int BPF_PROG(shield_file_open, struct file *file) {
  */
 SEC("lsm/bpf")
 int BPF_PROG(shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
-	if (!is_module_active(&state_map)) {
-		return 0;
-	}
-
-	if (get_global_uid() != 0) {
-		struct shield_alert *event =
-			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-		if (event) {
-			BPF_SAFE_MEMSET(event, sizeof(*event));
-
-			event->pid = bpf_get_current_pid_tgid() >> 32;
-			event->action_type = ACTION_BPF_TAMPER;
-			char bpf_target[] = "bpf() syscall invocation";
-			bpf_probe_read_kernel_str(event->target, sizeof(event->target),
-									  bpf_target);
-			bpf_ringbuf_submit(event, 0);
-		}
-		bpf_printk(
-			"Bouclier Bleu [BLOCK]: Unprivileged bpf() tampering prevented.\n");
-		return -EPERM;
-	}
-
-	return 0;
+	BOUCLIER_ENFORCE_PRIVILEGE(
+		ACTION_BPF_TAMPER, "bpf() syscall invocation",
+		"Bouclier Bleu [BLOCK]: Unprivileged bpf() tampering prevented.\n");
 }
 
 /*
@@ -197,27 +206,7 @@ int BPF_PROG(shield_bpf, int cmd, union bpf_attr *attr, unsigned int size) {
  */
 SEC("lsm/syslog")
 int BPF_PROG(shield_syslog, int type) {
-	if (!is_module_active(&state_map)) {
-		return 0;
-	}
-
-	if (get_global_uid() != 0) {
-		struct shield_alert *event =
-			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-		if (event) {
-			BPF_SAFE_MEMSET(event, sizeof(*event));
-
-			event->pid = bpf_get_current_pid_tgid() >> 32;
-			event->action_type = ACTION_SYSLOG_LEAK;
-			char dmesg_target[] = "kernel syslog/dmesg read";
-			bpf_probe_read_kernel_str(event->target, sizeof(dmesg_target),
-									  dmesg_target);
-			bpf_ringbuf_submit(event, 0);
-		}
-		bpf_printk("Bouclier Bleu [BLOCK]: Unprivileged dmesg kernel info leak "
-				   "prevented.\n");
-		return -EPERM;
-	}
-
-	return 0;
+	BOUCLIER_ENFORCE_PRIVILEGE(ACTION_SYSLOG_LEAK, "kernel syslog/dmesg read",
+							   "Bouclier Bleu [BLOCK]: Unprivileged dmesg "
+							   "kernel info leak prevented.\n");
 }
