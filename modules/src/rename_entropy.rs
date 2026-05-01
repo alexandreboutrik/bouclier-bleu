@@ -259,7 +259,7 @@ define_security_module!(
 		let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
 
 		for path in target_paths {
-			let walker = WalkDir::new(path).into_iter().filter_entry(|e| {
+			let walker = crate::build_secure_walker(path).filter_entry(|e| {
 				let fname = e.file_name().to_string_lossy();
 				if !fname.starts_with('.') { return true; }
 				critical_hidden.contains(&fname.as_ref())
@@ -306,8 +306,7 @@ define_security_module!(
 			// `~/.mozilla`) which generally contain high-churn, benign files
 			// that do not require strict ransomware entropy monitoring.
 			let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
-			let walker = WalkDir::new(path)
-				.into_iter()
+			let walker = crate::build_secure_walker(path)
 				.filter_entry(move |e| {
 					let file_name = e.file_name().to_string_lossy();
 

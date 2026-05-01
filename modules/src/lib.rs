@@ -307,7 +307,7 @@ macro_rules! define_security_module {
  * threads, while the Mutex prevents interleaved JSON objects during concurrent
  * high-frequency attack bursts.
  */
-static SIEM_LOG_SINK: OnceLock<Mutex<File>> = OnceLock::new();
+static SIEM_LOG_SINK: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 
 /// NDJSON Forwarding Engine
 ///
@@ -327,8 +327,11 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
         let get_fallback = || {
             let fallback_file = ["/tmp/bouclier_fallback.log"]
                 .iter()
-                .find_map(|path| OpenOptions::new().write(true).open(path).ok())
-                .expect("FATAL: No writable device available for telemetry fallback");
+                .find_map(|path| OpenOptions::new().write(true).open(path).ok());
+            if fallback_file.is_none() {
+                eprintln!("Bouclier Bleu [FATAL]: No writable device available. Telemetry dropped.");
+            }
+
             Mutex::new(fallback_file)
         };
 
@@ -405,21 +408,21 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
          * attacks by forcing the kernel to fail the open() syscall if
          * alerts.json is a symbolic link.
          */
-        let file = match OpenOptions::new()
+        let file_opt = match OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .custom_flags(OFlags::NOFOLLOW.bits() as i32)
             .open(format!("{}/alerts.json", log_dir))
         {
-            Ok(f) => f,
+            Ok(f) => Some(f),
             Err(e) => {
                 eprintln!("Bouclier Bleu [CRITICAL]: Failed to open SIEM sink: {}. Using /dev/null fallback.", e);
                 return get_fallback();
             }
         };
 
-        Mutex::new(file)
+        Mutex::new(file_opt)
     });
 
 	/*
@@ -450,10 +453,35 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
 
 	// Serialize and write to disk
 	if let Ok(json_string) = serde_json::to_string(&envelope) {
-		if let Ok(mut file) = file_mutex.lock() {
-			let _ = writeln!(file, "{}", json_string);
+		if let Ok(mut file_guard) = file_mutex.lock() {
+			if let Some(file) = file_guard.as_mut() {
+				/*
+				 * Telemetry Sink Validation
+				 * explicitly catch and log write failures to alert operators
+				 * of potential disk exhaustion or SIEM ingestion issues.
+				 */
+				if let Err(e) = writeln!(file, "{}", json_string) {
+					eprintln!("Bouclier Bleu [ERROR]: Failed to write SIEM event: {}", e);
+				}
+			}
 		}
 	}
+}
+
+///
+/// Secure Filesystem Traversal Builder
+///
+/// Standardizes directory scanning across all security modules. Enforces a
+/// strict maximum recursion depth of 20 and explicitly disables symlink
+/// following. This neutralizes infinite loops, I/O exhaustion, and extreme
+/// startup latency caused by malicious filesystem nesting or recursive
+/// bind-mounts.
+///
+pub fn build_secure_walker<P: AsRef<Path>>(path: P) -> walkdir::IntoIter {
+	walkdir::WalkDir::new(path)
+		.max_depth(20)
+		.follow_links(false)
+		.into_iter()
 }
 
 /// Centralized Hardware Key Generator
@@ -467,12 +495,15 @@ pub fn generate_hardware_key(metadata: &Metadata) -> [u8; 16] {
 	let user_dev = metadata.dev();
 
 	/*
-	 * User-to-Kernel dev_t Translation
-	 * glibc uses a 64-bit encoded device ID. The kernel uses a 32-bit
-	 * internal format ((major << 20) | minor). We must reconstruct it.
+	 * Pure-Rust dev_t Translation (Linux ABI)
+	 * Strict internal policy forbids unsafe FFI to libc. Therefore, we
+	 * manually replicate the <sys/sysmacros.h> gnu_dev_major/minor bitwise
+	 * shifts to decode the 64-bit userland `dev_t` into major and minor
+	 * numbers, then repack them into the kernel's 32-bit eBPF format.
 	 */
-	let major = ((user_dev & 0x00000000000fff00) >> 8) | ((user_dev & 0xfffff00000000000) >> 32);
-	let minor = (user_dev & 0x00000000000000ff) | ((user_dev & 0x00000ffffff00000) >> 12);
+	let major = ((user_dev >> 8) & 0xfff) | ((user_dev >> 32) & !0xfff);
+	let minor = (user_dev & 0xff) | ((user_dev >> 12) & !0xff);
+
 	let kernel_dev = ((major as u32) << 20) | (minor as u32);
 
 	// Construct the 16-byte struct dir_id memory layout

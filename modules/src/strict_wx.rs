@@ -69,7 +69,7 @@ define_security_module!(
 		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
 
 		for path in target_paths {
-			for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+			for entry in crate::build_secure_walker(path).filter_map(|e| e.ok()) {
 				if entry.file_type().is_file() {
 					count += 1;
 				}
@@ -100,7 +100,7 @@ define_security_module!(
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Scanning {} for strict_wx opt-in attributes...", path);
 
-			for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+			for entry in crate::build_secure_walker(path).filter_map(|e| e.ok()) {
 				if entry.file_type().is_file() {
 					/*
 					 * TOCTOU Race Condition Mitigation

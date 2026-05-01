@@ -82,16 +82,8 @@ define_security_module!(
 		let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
 
 		for path in target_paths {
-			/*
-			 * Traversal Depth Constraint
-			 * Restricts recursion to 20 levels and ignores symlinks to prevent
-			 * infinite loops or extreme startup latency caused by malicious
-			 * nesting.
-			 */
-		let safe_walker = WalkDir::new(path)
-				.max_depth(20)
-				.follow_links(false)
-				.into_iter();
+
+			let safe_walker = crate::build_secure_walker(path);
 
 			for entry in safe_walker {
 				match entry {
@@ -104,9 +96,9 @@ define_security_module!(
 						if e.io_error().map(|io| io.kind() == std::io::ErrorKind::PermissionDenied).unwrap_or(false) {
 							eprintln!("Bouclier Bleu [Warning]: Permission denied traversing {}: {}", path, e);
 						}
-					}
-				}
-			}
+					   }
+				   }
+			   }
 		}
 
 		// Apply a 25% safety buffer for new directories, with an absolute
@@ -135,16 +127,7 @@ define_security_module!(
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Recursively indexing volatile path {}...", path);
 
-			/*
-			 * Traversal Depth Constraint
-			 * Restricts recursion to 20 levels and ignores symlinks to prevent
-			 * indefinite I/O blocking or extreme startup latency caused by
-			 * malicious filesystem nesting.
-			 */
-			let safe_walker = WalkDir::new(path)
-				.max_depth(20)
-				.follow_links(false)
-				.into_iter();
+			let safe_walker = crate::build_secure_walker(path);
 
 			for entry in safe_walker.filter_map(|e| e.ok()) {
 				// System-level Inode Extraction
