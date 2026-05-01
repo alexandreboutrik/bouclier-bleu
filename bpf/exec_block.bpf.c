@@ -201,13 +201,10 @@ block_exec:
 		if (len == -ENAMETOOLONG) {
 			bpf_printk("Bouclier Bleu [Warning]: Execution path truncated "
 					   "(>4096 bytes).\n");
+			path_buf[PATH_MAX - 1] = '\0';
 		} else {
-			bpf_printk("Bouclier Bleu [Warning]: Path resolution failed "
-					   "(Error: %ld).\n",
-					   len);
+			path_buf[0] = '\0';
 		}
-		/* null-terminate the buffer and continue to block the execution */
-		path_buf[0] = '\0';
 	} else if (len == 0) {
 		path_buf[0] = '\0';
 	}
