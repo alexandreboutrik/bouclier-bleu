@@ -336,7 +336,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 * Now that telemetry is securely buffered, issue SIGKILL (9)
 			 * directly from kernel-space to eliminate TOCTOU race conditions.
 			 */
-			long sig_result = bpf_send_signal(9) < 0;
+			long sig_result = bpf_send_signal(9);
 			if (sig_result < 0) {
 				bpf_printk(
 					"Bouclier Bleu [ERROR]: SIGKILL delivery failed (%ld).\n",
