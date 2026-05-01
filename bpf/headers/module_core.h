@@ -71,7 +71,20 @@
 static __always_inline int is_module_active(void *map) {
 	__u32 key = 0;
 	__u32 *active = bpf_map_lookup_elem(map, &key);
-	return (active && *active == 1);
+
+	if (!active) {
+		/*
+		 * State Map Exhaustion / Sabotage Defense
+		 * If the control plane lookup fails, we default to fail-closed
+		 * (active = 1). Degrading visibility is dangerous, but disabling
+		 * protection entirely during a map exhaustion attack is fatal.
+		 */
+		bpf_printk("Bouclier Bleu [FATAL]: Control map lookup failed. Failing "
+				   "closed.\n");
+		return 1;
+	}
+
+	return (*active == 1);
 }
 
 /**
