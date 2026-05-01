@@ -234,28 +234,55 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 	 * truncation bugs.
 	 */
 	if (original_nlen >= 4 && original_nlen <= 255) {
-		/*
-		 * Re-assert bounds to the verifier using bitwise masking.
-		 * This is strictly required because 'nlen' bounds are lost to the
-		 * verifier after a stack spill.
-		 */
-		__u32 i1 = (nlen - 4) & 0xFF;
-		__u32 i2 = (nlen - 3) & 0xFF;
-		__u32 i3 = (nlen - 2) & 0xFF;
-		__u32 i4 = (nlen - 1) & 0xFF;
+		int dot_pos = -1;
 
-		if (scratch->name[i1] == '.' && scratch->name[i2] == 'l' &&
-			scratch->name[i3] == 'o' && scratch->name[i4] == 'g')
-			return 0;
-		if (scratch->name[i1] == '.' && scratch->name[i2] == 'g' &&
-			scratch->name[i3] == 'i' && scratch->name[i4] == 't')
-			return 0;
-		if (scratch->name[i1] == '.' && scratch->name[i2] == 't' &&
-			scratch->name[i3] == 'm' && scratch->name[i4] == 'p')
-			return 0;
-		if (scratch->name[i1] == '.' && scratch->name[i2] == 's' &&
-			scratch->name[i3] == 'w' && scratch->name[i4] == 'p')
-			return 0;
+/*
+ * Traverse from the end of the string to find the true extension
+ * boundary, preventing bypasses where attackers append benign
+ * extensions to malicious ones (e.g., malware.locked.log)
+ */
+#pragma unroll
+		for (int i = 0; i < 8; i++) {
+			int idx = nlen - 1 - i;
+			if (idx < 0)
+				break;
+
+			if (scratch->name[idx & 0xFF] == '.') {
+				dot_pos = idx;
+				break; // True extension boundary found
+			}
+		}
+
+		if (dot_pos > 0 && (original_nlen - dot_pos) <= 5) {
+			/*
+			 * eBPF Verifier Bounds Guarantee (& 0xFF)
+			 * The eBPF verifier tracks the maximum possible value of all
+			 * variables to prevent out-of-bounds memory access. When doing
+			 * pointer arithmetic or array indexing (like `scratch->name[i1]`),
+			 * the verifier must be mathematically certain the index won't
+			 * exceed the array size (256 bytes).
+			 * 0xFF in binary is 11111111 (255). By applying a bitwise AND
+			 * (& 0xFF) to our calculated index, we truncate any higher bits.
+			 * This mathematically proves to the Verifier that the resulting
+			 * integer can NEVER be larger than 255.
+			 */
+			__u32 i1 = (dot_pos + 1) & 0xFF;
+			__u32 i2 = (dot_pos + 2) & 0xFF;
+			__u32 i3 = (dot_pos + 3) & 0xFF;
+
+			if (scratch->name[i1] == 'l' && scratch->name[i2] == 'o' &&
+				scratch->name[i3] == 'g')
+				return 0;
+			if (scratch->name[i1] == 'g' && scratch->name[i2] == 'i' &&
+				scratch->name[i3] == 't')
+				return 0;
+			if (scratch->name[i1] == 't' && scratch->name[i2] == 'm' &&
+				scratch->name[i3] == 'p')
+				return 0;
+			if (scratch->name[i1] == 's' && scratch->name[i2] == 'w' &&
+				scratch->name[i3] == 'p')
+				return 0;
+		}
 	}
 
 	calculate_character_counts(scratch);

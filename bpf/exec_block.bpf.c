@@ -183,11 +183,18 @@ block_exec:
 	 * symlink resolution, mitigating bypasses via path normalization.
 	 */
 	len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
-	if (len == -ENAMETOOLONG) {
-		bpf_printk("Bouclier Bleu [BLOCK]: Evasion attempt (Path too long)\n");
-		return -EPERM;
-	} else if (len <= 0) {
+	if (len < 0) {
+		if (len == -ENAMETOOLONG) {
+			bpf_printk("Bouclier Bleu [Warning]: Execution path truncated "
+					   "(>4096 bytes).\n");
+		} else {
+			bpf_printk("Bouclier Bleu [Warning]: Path resolution failed "
+					   "(Error: %ld).\n",
+					   len);
+		}
 		/* null-terminate the buffer and continue to block the execution */
+		path_buf[0] = '\0';
+	} else if (len == 0) {
 		path_buf[0] = '\0';
 	}
 
