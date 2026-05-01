@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, Signal, System};
-use walkdir::WalkDir;
 
 /// Telemetry payload yielded by the `rename_entropy` BPF hook.
 ///
