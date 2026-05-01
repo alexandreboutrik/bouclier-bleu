@@ -109,8 +109,9 @@ define_security_module!(
 		 */
 		for path in target_files {
 			if let Ok(key_bytes) = crate::get_secure_hardware_key(path) {
-				bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-					.map_err(|e| format!("CRITICAL: Map update failed for {}: {}", path, e))?;
+				if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
+					eprintln!("Bouclier Bleu [WARNING]: Could not protect {}: {}", path, e);
+				}
 			}
 		}
 		Ok(())
