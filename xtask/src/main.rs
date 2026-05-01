@@ -66,6 +66,7 @@ fn main() {
 			eprintln!("Usage:");
 			eprintln!("  cargo xtask [-img <image>] prepare-image           - Builds the base testing VM image");
 			eprintln!("  cargo xtask [-img <image>] test                    - Runs all public test suites in VM");
+			eprintln!("  cargo xtask [-img <image>] test unit               - Runs all inline Rust unit tests in VM");
 			eprintln!("  cargo xtask [-img <image>] test component          - Runs all module component tests in VM");
 			eprintln!("  cargo xtask [-img <image>] test integration        - Runs all integration tests in VM");
 			eprintln!(
@@ -114,6 +115,9 @@ fn run_tests(
 
 	let mut execute_suite = |cat: &str, target: Option<&str>| -> TaskResult<()> {
 		let (res, time) = match cat {
+			"unit" => run_test_suite("Unit", "unit", "rs", target, |_, _| {
+				format!("cargo test -q --release --lib")
+			})?,
 			"component" => run_test_suite(
 				"Component (eBPF Defenses)",
 				"component",
@@ -151,6 +155,7 @@ fn run_tests(
 	match category {
 		None | Some("all") => {
 			println!("\n[INFO] Initiating public Bouclier Bleu test suites...");
+			execute_suite("unit", None)?;
 			execute_suite("component", None)?;
 			execute_suite("integration", None)?;
 		}
