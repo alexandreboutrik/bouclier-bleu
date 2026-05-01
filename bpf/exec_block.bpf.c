@@ -138,8 +138,22 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		 * CO-RE Container-Of Lookup is used to avoid missing libbpf macro
 		 * errors across different distributions.
 		 */
+		if (!bpf_core_field_exists(((struct shmem_inode_info *)0)->vfs_inode)) {
+			return 0; // Graceful fallback on unsupported kernels
+		}
+
 		size_t offset = __builtin_preserve_field_info(
 			((struct shmem_inode_info *)0)->vfs_inode, 0);
+
+		/*
+		 * Arithmetic Bounds Validation
+		 * Prevents arbitrary memory reads or underflows if the CO-RE
+		 * calculation yields 0 or an absurdly large offset.
+		 */
+		if (offset == 0 || offset > sizeof(struct shmem_inode_info)) {
+			return 0;
+		}
+
 		struct shmem_inode_info *info =
 			(struct shmem_inode_info *)((void *)f_inode - offset);
 
