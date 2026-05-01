@@ -320,12 +320,12 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
 
         /*
          * Graceful Telemetry Degradation
-         * Instead of panicking with unwrap() if /dev/null is missing, we
-         * safely iterate through fallback devices to keep the EDR daemon
-         * alive.
+         * Instead of panicking with unwrap() if the fallback file is missing,
+         * we safely iterate through a list of fallback devices to keep the EDR
+         * daemon alive.
          */
         let get_fallback = || {
-            let fallback_file = ["/dev/null", "/dev/zero", "/tmp/bouclier_fallback.log"]
+            let fallback_file = ["/tmp/bouclier_fallback.log"]
                 .iter()
                 .find_map(|path| OpenOptions::new().write(true).open(path).ok())
                 .expect("FATAL: No writable device available for telemetry fallback");
@@ -354,7 +354,7 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
          * workspace.
          */
         if let Ok(meta) = std::fs::metadata(log_dir) {
-            if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
+            if !meta.is_dir() || meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
                 eprintln!(
                     "Bouclier Bleu [WARNING]: Log directory {} has insecure permissions (Potential Pre-Staging Attack). Auto-remediating...",
                     log_dir
@@ -370,8 +370,14 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                  * disabling all protection modules via a panic, we fall back
                  * to /dev/null if remediation fails.
                  */
-                if let Err(e) = std::fs::remove_dir_all(log_dir) {
-                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to wipe compromised log directory: {}. Sinking telemetry to /dev/null.", e);
+                let removal_result = if !meta.is_dir() {
+                    std::fs::remove_file(log_dir)
+                } else {
+                    std::fs::remove_dir_all(log_dir)
+                };
+
+                if let Err(e) = removal_result {
+                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to wipe compromised log directory: {}. Sinking telemetry to fallback.", e);
                     return get_fallback();
                 }
 
@@ -381,14 +387,14 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                     .mode(0o700)
                     .create(log_dir)
                 {
-                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to recreate secure log directory: {}. Sinking telemetry to /dev/null.", e);
+                    eprintln!("Bouclier Bleu [CRITICAL]: Failed to recreate secure log directory: {}. Sinking telemetry to fallback.", e);
                     return get_fallback();
                 }
 
                 eprintln!("Bouclier Bleu [INFO]: Log directory securely rebuilt.");
             }
         } else {
-            eprintln!("Bouclier Bleu [CRITICAL]: Failed to verify log directory metadata. Sinking telemetry to /dev/null.");
+            eprintln!("Bouclier Bleu [CRITICAL]: Failed to verify log directory metadata. Sinking telemetry to fallback.");
             return get_fallback();
         }
 

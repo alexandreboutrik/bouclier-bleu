@@ -135,7 +135,18 @@ define_security_module!(
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Recursively indexing volatile path {}...", path);
 
-			for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+			/*
+			 * Traversal Depth Constraint
+			 * Restricts recursion to 20 levels and ignores symlinks to prevent
+			 * indefinite I/O blocking or extreme startup latency caused by
+			 * malicious filesystem nesting.
+			 */
+			let safe_walker = WalkDir::new(path)
+				.max_depth(20)
+				.follow_links(false)
+				.into_iter();
+
+			for entry in safe_walker.filter_map(|e| e.ok()) {
 				// System-level Inode Extraction
 				if entry.file_type().is_dir() {
 					if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
