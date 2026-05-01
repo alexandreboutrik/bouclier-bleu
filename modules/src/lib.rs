@@ -319,6 +319,20 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
         let log_dir = "/var/log/bouclier-bleu";
 
         /*
+         * Graceful Telemetry Degradation
+         * Instead of panicking with unwrap() if /dev/null is missing, we
+         * safely iterate through fallback devices to keep the EDR daemon
+         * alive.
+         */
+        let get_fallback = || {
+            let fallback_file = ["/dev/null", "/dev/zero", "/tmp/bouclier_fallback.log"]
+                .iter()
+                .find_map(|path| OpenOptions::new().write(true).open(path).ok())
+                .expect("FATAL: No writable device available for telemetry fallback");
+            Mutex::new(fallback_file)
+        };
+
+        /*
          * TOCTOU & Privilege Escalation Mitigation
          * We atomically create the directory with root-only permissions
          * (0o700) to prevent unprivileged users from staging symlink attacks
@@ -358,7 +372,7 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                  */
                 if let Err(e) = std::fs::remove_dir_all(log_dir) {
                     eprintln!("Bouclier Bleu [CRITICAL]: Failed to wipe compromised log directory: {}. Sinking telemetry to /dev/null.", e);
-                    return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
+                    return get_fallback();
                 }
 
                 // Rebuild the directory cleanly
@@ -368,14 +382,14 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
                     .create(log_dir)
                 {
                     eprintln!("Bouclier Bleu [CRITICAL]: Failed to recreate secure log directory: {}. Sinking telemetry to /dev/null.", e);
-                    return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
+                    return get_fallback();
                 }
 
                 eprintln!("Bouclier Bleu [INFO]: Log directory securely rebuilt.");
             }
         } else {
             eprintln!("Bouclier Bleu [CRITICAL]: Failed to verify log directory metadata. Sinking telemetry to /dev/null.");
-            return Mutex::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
+            return get_fallback();
         }
 
         /*
@@ -395,7 +409,7 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("Bouclier Bleu [CRITICAL]: Failed to open SIEM sink: {}. Using /dev/null fallback.", e);
-                OpenOptions::new().write(true).open("/dev/null").expect("Failed to open /dev/null fallback")
+                return get_fallback();
             }
         };
 
