@@ -80,7 +80,9 @@ static __always_inline bool is_removable_device(const char *dev_name) {
 		return false;
 
 	char prefix[8] = {};
-	bpf_probe_read_kernel_str(prefix, sizeof(prefix), dev_name);
+
+	if (bpf_probe_read_kernel_str(prefix, sizeof(prefix), dev_name) <= 0)
+		return false;
 
 	if (prefix[0] == '/' && prefix[1] == 'd' && prefix[2] == 'e' &&
 		prefix[3] == 'v' && prefix[4] == '/') {
@@ -354,9 +356,13 @@ int BPF_PROG(mount_secure_move_mount, const struct path *from_path,
 	if (bpf_core_field_exists(((struct mount *)0)->mnt_devname)) {
 		size_t mnt_offset =
 			__builtin_preserve_field_info(((struct mount *)0)->mnt, 0);
-		struct mount *real_mount =
-			(struct mount *)((void *)from_path->mnt - mnt_offset);
-		dev_name = BPF_CORE_READ(real_mount, mnt_devname);
+		if (mnt_offset > 0 && mnt_offset <= sizeof(struct mount)) {
+			struct mount *real_mount =
+				(struct mount *)((void *)from_path->mnt - mnt_offset);
+			dev_name = BPF_CORE_READ(real_mount, mnt_devname);
+		} else if (sb) {
+			dev_name = BPF_CORE_READ(sb, s_id);
+		}
 	} else if (sb) {
 		/* Fallback: VFS Superblock ID if struct mount is inaccessible */
 		dev_name = BPF_CORE_READ(sb, s_id);

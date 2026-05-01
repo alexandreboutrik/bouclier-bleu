@@ -91,8 +91,13 @@ BOUCLIER_PROTECTED_FILES_MAP;
                                                                                \
 			event->pid = bpf_get_current_pid_tgid() >> 32;                     \
 			event->action_type = (action);                                     \
-			char t_str[] = target_str;                                         \
-			bpf_probe_read_kernel_str(event->target, sizeof(t_str), t_str);    \
+			/*                                                                 \
+			 * Memory-Boundary Safe Extraction                                 \
+			 * target_str is inherently a static kernel string literal.        \
+			 * We read it directly rather than copying to the BPF stack first. \
+			 */                                                                \
+			bpf_probe_read_kernel_str(event->target, sizeof(event->target),    \
+									  target_str);                             \
 			bpf_ringbuf_submit(event, 0);                                      \
 		}                                                                      \
 		bpf_printk(log_msg);                                                   \
