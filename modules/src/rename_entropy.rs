@@ -133,7 +133,12 @@ fn neutralize_threat_tree(target_ppid: u32) {
 		 * start time to ensure we aren't killing a newly spawned, innocent
 		 * process that just inherited the orchestrator's PID.
 		 */
-		if parent.start_time() < sysinfo::System::uptime() {
+		let current_epoch = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_secs();
+
+		if parent.start_time() > 0 && parent.start_time() < current_epoch {
 			parent.kill_with(Signal::Kill);
 		} else {
 			eprintln!(

@@ -293,11 +293,18 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 	 * array size, and prevent division-by-zero panics in the virtual machine.
 	 */
 	__u32 safe_nlen = (nlen > 0) ? nlen : 1;
-	__u32 h_scaled = scaled_log2[safe_nlen & 0xFF] - (sum_c_log_c / safe_nlen);
 
 	/*
-	 * Enforcement & Telemetry
+	 * Underflow Prevention & Bounding
+	 * Prevents unsigned integer underflow if the frequency calculation
+	 * anomalously exceeds the scaled maximum.
 	 */
+	__u32 h_scaled = 0;
+	if (scaled_log2[safe_nlen & 0xFF] > (sum_c_log_c / safe_nlen)) {
+		h_scaled = scaled_log2[safe_nlen & 0xFF] - (sum_c_log_c / safe_nlen);
+	}
+
+	/* Enforcement & Telemetry */
 	if (h_scaled > ENTROPY_THRESHOLD_SCALED) {
 		event = bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
 		if (event) {
@@ -329,7 +336,12 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 * Now that telemetry is securely buffered, issue SIGKILL (9)
 			 * directly from kernel-space to eliminate TOCTOU race conditions.
 			 */
-			bpf_send_signal(9);
+			long sig_result = bpf_send_signal(9) < 0;
+			if (sig_result < 0) {
+				bpf_printk(
+					"Bouclier Bleu [ERROR]: SIGKILL delivery failed (%ld).\n",
+					sig_result);
+			}
 			bpf_ringbuf_submit(event, 0);
 		} else {
 			/*
@@ -338,6 +350,9 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 * We still issue the kill to prevent ransomware encryption, but
 			 * this represents a degraded, silent kill.
 			 */
+			bpf_printk("Bouclier Bleu [FATAL]: Ring buffer exhausted. Killing "
+					   "PID %d.\n",
+					   bpf_get_current_pid_tgid() >> 32);
 			bpf_send_signal(9);
 		}
 		return -EPERM; // Block the rename atomically in the kernel
