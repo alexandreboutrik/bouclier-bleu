@@ -1,16 +1,19 @@
-{ pkgs ? import <nixpkgs> {} }:
+let
+  rust_overlay = import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz");
+  
+  pkgs = import <nixpkgs> { overlays = [ rust_overlay ]; };
 
+  rust-toolchain = pkgs.rust-bin.stable.latest.default.override {
+    extensions = [ "rust-src" "rustfmt" "clippy" ];
+  };
+in
 pkgs.mkShell {
   name = "bouclier-bleu-dev";
 
   nativeBuildInputs = with pkgs; [
     # Rust Toolchain
-    cargo
-    rustc
-    rustfmt
+	rust-toolchain
 	shfmt
-    clippy
-    #rust-analyzer
 
     # C/eBPF Compilers and Tools
 	bpftools jq
