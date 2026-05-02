@@ -432,7 +432,7 @@ function update_aur() {
 			echo "Failed to git commit AUR update. Exiting."
 			exit 1
 		}
-	git push origin main ||
+	git push origin master ||
 		{
 			echo "Failed to push to AUR remote. Exiting."
 			exit 1
