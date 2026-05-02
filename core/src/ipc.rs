@@ -161,13 +161,13 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
 					 * to sever stalled connections and maintain daemon
 					 * availability.
 					 */
-					if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(100))) {
+					if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(1000))) {
 						eprintln!("WARNING: Failed to apply read timeout to stream: {}", e);
 						continue;
 					}
 
 					/* Apply timeout to prevent Slowloris-style blocking */
-					if let Err(e) = stream.set_write_timeout(Some(Duration::from_millis(100))) {
+					if let Err(e) = stream.set_write_timeout(Some(Duration::from_millis(1000))) {
 						eprintln!("WARNING: Failed to apply write timeout to stream: {}", e);
 						continue;
 					}

@@ -159,26 +159,26 @@ fn main() -> Result<()> {
 				// We are on >= 6.12. Enable the post-2025 (dentry) hook.
 				if let Some(mut prog) = obj
 					.progs_mut()
-					.find(|p| p.name().to_str().unwrap_or("") == new_hook)
+					.find(|p| p.name().to_string_lossy() == new_hook)
 				{
 					let _ = prog.set_autoload(true);
 				}
 				if let Some(mut prog) = obj
 					.progs_mut()
-					.find(|p| p.name().to_str().unwrap_or("") == old_hook)
+					.find(|p| p.name().to_string_lossy() == old_hook)
 				{
 					let _ = prog.set_autoload(false);
 				}
 			} else {
 				if let Some(mut prog) = obj
 					.progs_mut()
-					.find(|p| p.name().to_str().unwrap_or("") == old_hook)
+					.find(|p| p.name().to_string_lossy() == old_hook)
 				{
 					let _ = prog.set_autoload(true);
 				}
 				if let Some(mut prog) = obj
 					.progs_mut()
-					.find(|p| p.name().to_str().unwrap_or("") == new_hook)
+					.find(|p| p.name().to_string_lossy() == new_hook)
 				{
 					let _ = prog.set_autoload(false);
 				}
@@ -189,13 +189,13 @@ fn main() -> Result<()> {
 			// handles the layout changes.
 			if let Some(mut prog) = obj
 				.progs_mut()
-				.find(|p| p.name().to_str().unwrap_or("") == new_rename)
+				.find(|p| p.name().to_string_lossy() == new_rename)
 			{
 				let _ = prog.set_autoload(true);
 			}
 			if let Some(mut prog) = obj
 				.progs_mut()
-				.find(|p| p.name().to_str().unwrap_or("") == old_rename)
+				.find(|p| p.name().to_string_lossy() == old_rename)
 			{
 				let _ = prog.set_autoload(false);
 			}
