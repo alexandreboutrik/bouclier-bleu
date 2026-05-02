@@ -154,8 +154,20 @@ fn main() {
 				 */
 				load_arms.push(quote! {
                     stringify!(#mod_ident) => {
+                        /*
+                         * Static Lifetime Promotion
+                         * We promote the uninitialized memory to the heap and
+                         * deliberately leak it. This satisfies the `'static`
+                         * lifetime bound required by `Box<dyn Any>`, allowing
+                         * the core daemon to safely hold the active eBPF
+                         * skeleton for the duration of the program's
+                         * lifecycle.
+                        */
+                        let open_object = Box::leak(Box::new(std::mem::MaybeUninit::uninit()));
                         let builder = #mod_ident::#builder_ident::default();
-                        let mut open_skel = builder.open().context(concat!("Failed to open ", stringify!(#mod_ident)))?;
+                        let mut open_skel = builder.open(open_object).context(concat!("Failed to open ", stringify!(#mod_ident)))?;
+
+                        let open_obj: &mut libbpf_rs::OpenObject = open_skel.open_object_mut();
 
                         /*
                          * SPLIT-PHASE BPF LOADING & DYNAMIC MEMORY ALLOCATION
@@ -167,7 +179,7 @@ fn main() {
                          * footprint of massive tracking maps.
                          */
                         for (map_name, &capacity) in capacities {
-                            if let Some(map) = open_skel.obj.map_mut(map_name) {
+                            if let Some(mut map) = open_obj.maps_mut().find(|m| m.name() == map_name.as_str()) {
                                 let _ = map.set_max_entries(capacity);
                             }
                         }
@@ -178,7 +190,7 @@ fn main() {
                          * `autoload` on incompatible kernel hooks before we
                          * ask libbpf to lock them into the verifier.
                          */
-                        pre_load_hook(&mut open_skel.obj)?;
+                        pre_load_hook(open_obj)?;
 
                         let mut skel = open_skel.load().context(concat!("Failed to load ", stringify!(#mod_ident)))?;
                         skel.attach().context(concat!("Failed to attach ", stringify!(#mod_ident)))?;
@@ -195,7 +207,8 @@ fn main() {
 				 * bypasses the update.
 				 */
 				let map_update_logic = quote! {
-					if let Some(state_map) = skel.obj.map("state_map") {
+					let obj: &libbpf_rs::Object = skel.object();
+					if let Some(state_map) = obj.maps().find(|m| m.name() == "state_map") {
 						let key: [u8; 4] = 0u32.to_ne_bytes();
 						let val: [u8; 4] = if active { 1u32 } else { 0u32 }.to_ne_bytes();
 
@@ -226,7 +239,8 @@ fn main() {
 				 */
 				get_map_arms.push(quote! {
 					if let Some(downcasted_skel) = skel.downcast_ref::<#mod_ident::#skel_ident>() {
-						if let Some(map) = downcasted_skel.obj.map(map_name) {
+						let obj: &libbpf_rs::Object = downcasted_skel.object();
+						if let Some(map) = obj.maps().find(|m| m.name() == map_name) {
 							return Ok(map);
 						} else {
 							bail!("Map '{}' not found in module skeleton", map_name);
@@ -244,7 +258,7 @@ fn main() {
 		use anyhow::{Context, Result, bail};
 		use std::any::Any;
 		use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-		use libbpf_rs::MapFlags;
+		use libbpf_rs::{MapFlags, MapCore};
 
 		#(#module_includes)*
 
@@ -281,11 +295,11 @@ fn main() {
 			}
 		}
 
-		/// Dynamically retrieves a reference to a BPF Map by its string
+		/// Dynamically retrieves an owned handle to a BPF Map by its string
 		/// identifier. Iterates through available skeleton types to
 		/// successfully downcast the `Any` trait object, eliminating the need
 		/// to hardcode map accessors in userland.
-		pub fn get_map<'a>(skel: &'a dyn Any, map_name: &str) -> Result<&'a libbpf_rs::Map> {
+		pub fn get_map<'a>(skel: &'a dyn Any, map_name: &str) -> Result<libbpf_rs::Map<'a>> {
 			#(#get_map_arms)*
 			bail!("Type downcast failed or map '{}' not found across all registered modules.", map_name)
 		}

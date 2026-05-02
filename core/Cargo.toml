@@ -4,15 +4,15 @@ version = "0.5.2"
 edition = "2024"
 
 [dependencies]
-libbpf-rs = "0.23"
-rustix = { version = "0.38", features = ["net", "fs", "process"] }
+libbpf-rs = "0.26"
+rustix = { version = "1.1", features = ["net", "fs", "process"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 
 modules = { path = "../modules" }
 
 [build-dependencies]
-libbpf-cargo = "0.23"
+libbpf-cargo = "0.26"
 quote = "1.0"
 proc-macro2 = "1.0"

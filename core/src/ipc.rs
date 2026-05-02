@@ -130,7 +130,7 @@ pub fn start_ipc_server(tx: mpsc::SyncSender<IpcMessage>) {
 					 * user-space spoofing attempts. If the caller is not
 					 * strictly UID 0 (root), the connection is terminated.
 					 */
-					match sockopt::get_socket_peercred(&stream) {
+					match sockopt::socket_peercred(&stream) {
 						Ok(cred) => {
 							if cred.uid.as_raw() != 0 {
 								eprintln!(

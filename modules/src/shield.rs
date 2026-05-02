@@ -15,6 +15,7 @@
 // limitations under the License.
 
 use crate::{define_security_module, BpfReader};
+use libbpf_rs::MapCore;
 
 /// Telemetry payload yielded by the `core_shield` BPF hooks.
 ///

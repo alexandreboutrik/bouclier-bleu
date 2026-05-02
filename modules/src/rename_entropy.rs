@@ -15,6 +15,7 @@
 // limitations under the License.
 
 use crate::{define_security_module, BpfReader};
+use libbpf_rs::MapCore;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -85,7 +86,8 @@ struct PpidStrike {
  * Decoupled State Registry
  * As `SecurityModule` implementations are instantiated via macros and shared
  * immutably via `Arc` across worker threads, we utilize a global OnceLock to
- * maintain the heuristic state matrix without violating safe concurrency bounds.
+ * maintain the heuristic state matrix without violating safe concurrency
+ * bounds.
  */
 static STRIKE_TRACKER: OnceLock<Mutex<HashMap<u32, PpidStrike>>> = OnceLock::new();
 
@@ -101,7 +103,7 @@ fn get_tracker() -> &'static Mutex<HashMap<u32, PpidStrike>> {
 /// malicious infrastructure to prevent re-spawning.
 fn neutralize_threat_tree(target_ppid: u32) {
 	let mut sys = System::new_all();
-	sys.refresh_processes();
+	sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
 	let target = Pid::from_u32(target_ppid);
 
@@ -152,11 +154,12 @@ fn neutralize_threat_tree(target_ppid: u32) {
  * DEFENSE HEURISTIC: HIGH-ENTROPY RANSOMWARE RENAMING
  * Ransomware families dynamically rename files with high-entropy, randomized
  * extensions (e.g., `.locked_xyz123`) or pure base-64 strings post-encryption.
- * * While the eBPF kernel hook atomically blocks the operation (`-EPERM`) and
+ * While the eBPF kernel hook atomically blocks the operation (`-EPERM`) and
  * directly issues a SIGKILL to prevent Time-of-Check to Time-of-Use (TOCTOU)
- * loops,  this userland module serves as the Control Plane and Telemetry Sink.
- * It consumes the forensic artifacts from the `alerts` RingBuffer for logging,
- * SIEM forwarding, and secondary remediation actions.
+ * loops, this userland module serves as the Control Plane and Telemetry Sink.
+ * It consumes forensic artifacts from the `alerts` RingBuffer for logging,
+ * SIEM forwarding, and orchestrating secondary remediation actions (like tree
+ * eradication).
  */
 define_security_module!(
 	struct: RenameEntropy,

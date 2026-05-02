@@ -44,14 +44,14 @@ pub mod bpf_loader {
 /// Implements the `MapProvider` dependency injection contract for the core
 /// daemon. It acts as the secure bridge between the type-erased eBPF skeletons
 /// (`dyn Any`) stored in the active registry and the strongly-typed
-/// `libbpf_rs::Map` references. It delegates the unsafe downcasting to the
+/// `libbpf_rs::Map` handles. It delegates the unsafe downcasting to the
 /// dynamically generated `bpf_loader` bindings.
 struct CoreMapProvider<'a> {
 	skel: &'a dyn Any,
 }
 
 impl<'a> modules::MapProvider for CoreMapProvider<'a> {
-	fn get_map(&self, name: &str) -> Result<&libbpf_rs::Map, String> {
+	fn get_map(&self, name: &str) -> Result<libbpf_rs::Map<'_>, String> {
 		bpf_loader::get_map(self.skel, name).map_err(|e| e.to_string())
 	}
 }
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
 	let daemon_config = config::DaemonConfig::load();
 
 	/*
-	 * REGISTRY INITIALIZATION
+	 * Registry Initialization
 	 * The userland registry acts as the logical abstraction layer for defense
 	 * rules.
 	 * Wrapping these in Arc ensures safe, read-only concurrent access across
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
 	let shared_registry = Arc::new(registry);
 
 	/*
-	 * KERNEL MEMORY LIFECYCLE
+	 * Kernel Memory Lifecycle
 	 * We maintain active eBPF skeletons strictly in memory. Dropping these
 	 * file descriptors would instruct the kernel to abruptly detach the BPF
 	 * hooks.
@@ -113,6 +113,15 @@ fn main() -> Result<()> {
 	 * cycles.
 	 */
 	let mut active_skeletons: HashMap<String, Box<dyn Any>> = HashMap::new();
+
+	/*
+	 * Telemetry Lifecycle Staging
+	 * `telemetry_maps` acts as a staging area for BPF map handles. By
+	 * collecting them here first, we separate the vector mutation phase from
+	 * the RingBuffer borrowing phase, preventing reallocation bugs and
+	 * satisfying Rust's strict borrowing rules.
+	 */
+	let mut telemetry_maps = Vec::new();
 	let mut ringbuf_builder = RingBufferBuilder::new();
 
 	for mod_name in bpf_loader::available_modules() {
@@ -148,17 +157,29 @@ fn main() -> Result<()> {
 
 			if post_2025 {
 				// We are on >= 6.12. Enable the post-2025 (dentry) hook.
-				if let Some(prog) = obj.prog_mut(&new_hook) {
+				if let Some(mut prog) = obj
+					.progs_mut()
+					.find(|p| p.name().to_str().unwrap_or("") == new_hook)
+				{
 					let _ = prog.set_autoload(true);
 				}
-				if let Some(prog) = obj.prog_mut(&old_hook) {
+				if let Some(mut prog) = obj
+					.progs_mut()
+					.find(|p| p.name().to_str().unwrap_or("") == old_hook)
+				{
 					let _ = prog.set_autoload(false);
 				}
 			} else {
-				if let Some(prog) = obj.prog_mut(&old_hook) {
+				if let Some(mut prog) = obj
+					.progs_mut()
+					.find(|p| p.name().to_str().unwrap_or("") == old_hook)
+				{
 					let _ = prog.set_autoload(true);
 				}
-				if let Some(prog) = obj.prog_mut(&new_hook) {
+				if let Some(mut prog) = obj
+					.progs_mut()
+					.find(|p| p.name().to_str().unwrap_or("") == new_hook)
+				{
 					let _ = prog.set_autoload(false);
 				}
 			}
@@ -166,10 +187,16 @@ fn main() -> Result<()> {
 			// vfs_rename has taken `struct renamedata *` since Linux 5.12.
 			// The CO-RE logic inside the _new hook already dynamically
 			// handles the layout changes.
-			if let Some(prog) = obj.prog_mut(&new_rename) {
+			if let Some(mut prog) = obj
+				.progs_mut()
+				.find(|p| p.name().to_str().unwrap_or("") == new_rename)
+			{
 				let _ = prog.set_autoload(true);
 			}
-			if let Some(prog) = obj.prog_mut(&old_rename) {
+			if let Some(mut prog) = obj
+				.progs_mut()
+				.find(|p| p.name().to_str().unwrap_or("") == old_rename)
+			{
 				let _ = prog.set_autoload(false);
 			}
 
@@ -181,8 +208,6 @@ fn main() -> Result<()> {
 			eprintln!("· [Fatal] Failed to load module {}", mod_name);
 		}
 	}
-
-	let mut has_ringbuf = false;
 
 	for (mod_name, stored_skel) in active_skeletons.iter() {
 		let is_active = daemon_config
@@ -202,7 +227,7 @@ fn main() -> Result<()> {
 		let module_slug = mod_name.to_string();
 
 		/*
-		 * THE MODULAR INIT DISPATCHER
+		 * The Modular Init Dispatcher
 		 * Lifecycle Synchronization Boundary
 		 * At this specific execution phase, the eBPF program is successfully
 		 * loaded and actively enforcing in the kernel, but the userland
@@ -222,18 +247,14 @@ fn main() -> Result<()> {
 			}
 		}
 
+		/*
+		 * Phase 1: Telemetry Staging
+		 * Extract the 'alerts' map handle and stage it alongside its
+		 * contextual variables. We do not bind to the RingBuffer here
+		 * to avoid mutable/immutable borrow conflicts on the staging vector.
+		 */
 		if let Ok(alerts_map) = bpf_loader::get_map(&**stored_skel, "alerts") {
-			ringbuf_builder
-				.add(alerts_map, move |data| {
-					if let Some(user_mod) = registry_clone.iter().find(|m| m.slug() == module_slug)
-					{
-						user_mod.process_event(data);
-					}
-					0 // continue polling
-				})
-				.context("Failed to bind RingBuffer callback")?;
-
-			has_ringbuf = true;
+			telemetry_maps.push((alerts_map, module_slug, registry_clone));
 		} else {
 			println!(
 				"· [Warning] Standard 'alerts' map not found in module: {}",
@@ -244,6 +265,29 @@ fn main() -> Result<()> {
 		if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
 			user_mod.toggle(is_active);
 		}
+	}
+
+	/*
+	 * Phase 2: Ringbuffer Binding
+	 * With the staging vector fully populated and locked from further
+	 * mutation, we safely iterate and borrow the map handles to construct the
+	 * unified, high-frequency telemetry pipeline.
+	 */
+	let mut has_ringbuf = false;
+	for (alerts_map, module_slug, registry_clone) in &telemetry_maps {
+		let slug = module_slug.clone();
+		let reg = Arc::clone(registry_clone);
+
+		ringbuf_builder
+			.add(alerts_map, move |data| {
+				if let Some(user_mod) = reg.iter().find(|m| m.slug() == slug) {
+					user_mod.process_event(data);
+				}
+				0 // continue polling
+			})
+			.context("Failed to bind RingBuffer callback")?;
+
+		has_ringbuf = true;
 	}
 
 	let ring_buffer = if has_ringbuf {
@@ -258,7 +302,7 @@ fn main() -> Result<()> {
 	};
 
 	/*
-	 * IPC CONTROL PLANE
+	 * Ipc Control Plane
 	 * Establishes a Multi-Producer, Single-Consumer (mpsc) channel following
 	 * the Actor Model. The main thread retains exclusive mutation rights over
 	 * kernel skeletons and BPF maps, thereby preventing data races.

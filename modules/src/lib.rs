@@ -41,7 +41,7 @@ pub mod strict_wx;
 /// without introducing tightly-coupled, circular dependencies between the
 /// `core` and `modules` crates.
 pub trait MapProvider {
-	fn get_map(&self, name: &str) -> Result<&libbpf_rs::Map, String>;
+	fn get_map(&self, name: &str) -> Result<libbpf_rs::Map<'_>, String>;
 }
 
 /// A zero-copy utility for safely extracting native Rust types from contiguous
@@ -301,7 +301,7 @@ macro_rules! define_security_module {
 }
 
 /*
- * Decoupled Telemtry Sink
+ * Decoupled Telemetry Sink
  * Global lock for the NDJSON log file. Utilizing OnceLock ensures the file
  * descriptor is lazily initialized exactly once across all asynchronous worker
  * threads, while the Mutex prevents interleaved JSON objects during concurrent
