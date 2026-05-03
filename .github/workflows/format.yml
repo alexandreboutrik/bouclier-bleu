@@ -29,7 +29,23 @@ jobs:
       - name: Install C and Bash formatters
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format shfmt
+          sudo apt-get install -y clang-format shfmt \
+            pkg-config clang llvm \
+            git build-essential \
+            libelf-dev zlib1g-dev libcap-ng-dev libbpf-dev \
+            linux-tools-common linux-tools-generic \
+            linux-tools-azure linux-cloud-tools-azure \
+            linux-tools-$(uname -r) linux-cloud-tools-$(uname -r) \
+            linux-headers-$(uname -r)
+
+      - name: Build and install bpftool from source (libbpf/bpftool)
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/libbpf/bpftool.git /tmp/bpftool
+          cd /tmp/bpftool/src
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          bpftool version
 
       - name: Enforce Formatting
         run: ./scripts/format.sh check -lint
