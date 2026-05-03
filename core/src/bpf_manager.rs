@@ -100,23 +100,11 @@ impl BpfEngine {
 		shared_registry: &Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>,
 		daemon_config: &DaemonConfig,
 	) {
-		for mod_name in bpf_loader::available_modules() {
-			/*
-			 * Extract dynamic memory constraints from the userland module.
-			 * This bridges the architectural gap between the module's
-			 * domain-specific sizing logic and the generic BPF loader, ensuring
-			 * the kernel only locks exactly the amount of RAM needed for the
-			 * current system state.
-			 */
-			let capacities =
-				if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
-					user_mod.map_capacities()
-				} else {
-					std::collections::HashMap::new()
-				};
+		// Evaluate the kernel boundary once before loading modules
+		let post_2025 = is_post_2025_vfs();
 
-			// Evaluate the kernel boundary once before loading modules
-			let post_2025 = is_post_2025_vfs();
+		for mod_name in bpf_loader::available_modules() {
+			let capacities = Self::get_capacities(mod_name, shared_registry);
 
 			if let Ok(skel) = bpf_loader::load_module(mod_name, &capacities, |obj| {
 				/*
@@ -125,55 +113,29 @@ impl BpfEngine {
 				 * vfs_mkdir), we must disable the one that does not match the
 				 * host kernel's exact signature, otherwise the verifier will
 				 * reject the entire object during the load phase with -EINVAL.
+				 *
+				 * vfs_rename has taken `struct renamedata *` since Linux 5.12.
+				 * The CO-RE logic inside the _new hook already dynamically
+				 * handles the layout changes.
 				 */
 				let old_hook = format!("{}_vfs_mkdir_exit_old", mod_name);
 				let new_hook = format!("{}_vfs_mkdir_exit_new", mod_name);
 				let old_rename = format!("{}_vfs_rename_exit_old", mod_name);
 				let new_rename = format!("{}_vfs_rename_exit_new", mod_name);
 
-				if post_2025 {
-					// We are on >= 6.12. Enable the post-2025 (dentry) hook.
-					if let Some(mut prog) = obj
-						.progs_mut()
-						.find(|p| p.name().to_string_lossy() == new_hook)
-					{
+				// Iterate securely over mutable programs to bypass
+				// deeply nested optionals and match arms.
+				for mut prog in obj.progs_mut() {
+					let name = prog.name().to_string_lossy();
+					if name == new_hook {
+						prog.set_autoload(post_2025);
+					} else if name == old_hook {
+						prog.set_autoload(!post_2025);
+					} else if name == new_rename {
 						prog.set_autoload(true);
-					}
-					if let Some(mut prog) = obj
-						.progs_mut()
-						.find(|p| p.name().to_string_lossy() == old_hook)
-					{
+					} else if name == old_rename {
 						prog.set_autoload(false);
 					}
-				} else {
-					if let Some(mut prog) = obj
-						.progs_mut()
-						.find(|p| p.name().to_string_lossy() == old_hook)
-					{
-						prog.set_autoload(true);
-					}
-					if let Some(mut prog) = obj
-						.progs_mut()
-						.find(|p| p.name().to_string_lossy() == new_hook)
-					{
-						prog.set_autoload(false);
-					}
-				}
-
-				// vfs_rename has taken `struct renamedata *` since Linux 5.12.
-				// The CO-RE logic inside the _new hook already dynamically
-				// handles the layout changes.
-				if let Some(mut prog) = obj
-					.progs_mut()
-					.find(|p| p.name().to_string_lossy() == new_rename)
-				{
-					prog.set_autoload(true);
-				}
-				if let Some(mut prog) = obj
-					.progs_mut()
-					.find(|p| p.name().to_string_lossy() == old_rename)
-				{
-					prog.set_autoload(false);
 				}
 
 				Ok(())
@@ -185,6 +147,34 @@ impl BpfEngine {
 			}
 		}
 
+		self.initialize_active_modules(shared_registry, daemon_config);
+	}
+
+	pub fn get_skeleton(&self, target: &str) -> Option<&dyn Any> {
+		self.active_skeletons.get(target).map(|b| &**b)
+	}
+
+	/// Extracts dynamic memory constraints from the userland module.
+	/// This bridges the architectural gap between the module's domain-specific
+	/// sizing logic and the generic BPF loader.
+	fn get_capacities(
+		mod_name: &str,
+		shared_registry: &Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>,
+	) -> HashMap<String, u32> {
+		if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
+			user_mod.map_capacities()
+		} else {
+			HashMap::new()
+		}
+	}
+
+	/// The Modular Init Dispatcher
+	/// Lifecycle Synchronization Boundary handled iteratively post-load.
+	fn initialize_active_modules(
+		&self,
+		shared_registry: &Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>,
+		daemon_config: &DaemonConfig,
+	) {
 		for (mod_name, stored_skel) in self.active_skeletons.iter() {
 			let is_active = daemon_config
 				.modules
@@ -200,16 +190,12 @@ impl BpfEngine {
 			}
 
 			/*
-			 * The Modular Init Dispatcher
-			 * Lifecycle Synchronization Boundary
 			 * At this specific execution phase, the eBPF program is
 			 * successfully loaded and actively enforcing in the kernel, but
 			 * the userland RingBuffer consumer thread has not yet been bound.
 			 * We invoke the module's optional `init` routine, injecting the
-			 * `CoreMapProvider` context. This allows the defense heuristic to
-			 * securely and synchronously configure kernel state (e.g., pushing
-			 * protected directory hardware IDs) before high-frequency
-			 * telemetry begins flowing.
+			 * `CoreMapProvider` context to securely configure kernel state
+			 * before high-frequency telemetry begins flowing.
 			 */
 			if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
 				let provider = CoreMapProvider {
@@ -218,15 +204,8 @@ impl BpfEngine {
 				if let Err(e) = user_mod.init(&provider) {
 					eprintln!("· [Fatal] Module {} initialization failed: {}", mod_name, e);
 				}
-			}
-
-			if let Some(user_mod) = shared_registry.iter().find(|m| m.slug() == mod_name) {
 				user_mod.toggle(is_active);
 			}
 		}
-	}
-
-	pub fn get_skeleton(&self, target: &str) -> Option<&dyn Any> {
-		self.active_skeletons.get(target).map(|b| &**b)
 	}
 }

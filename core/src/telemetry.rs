@@ -21,6 +21,10 @@ use std::sync::Arc;
 use crate::bpf_manager::{bpf_loader, BpfEngine};
 use modules::SecurityModule;
 
+// Type aliases
+pub type SharedRegistry = Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>;
+type StagedTelemetryMap<'a> = (libbpf_rs::Map<'a>, String, SharedRegistry);
+
 /// The Pipeline
 /// Manages the high-frequency asynchronous telemetry pipeline between
 /// kernel-space and user-space.
@@ -29,14 +33,20 @@ pub struct TelemetryPipeline;
 impl TelemetryPipeline {
 	pub fn build<'a>(
 		engine: &'a BpfEngine,
-		shared_registry: &Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>,
+		shared_registry: &SharedRegistry,
 	) -> Result<Option<RingBuffer<'a>>> {
-		/*
-		 * Phase 1: Telemetry Staging
-		 * Extract the 'alerts' map handle and stage it alongside its
-		 * contextual variables. We do not bind to the RingBuffer here to avoid
-		 * mutable/immutable borrow conflicts on the staging vector.
-		 */
+		let telemetry_maps = Self::stage_maps(engine, shared_registry);
+		Self::bind_ringbuffer(telemetry_maps)
+	}
+
+	/// Phase 1: Telemetry Staging
+	/// Extract the 'alerts' map handle and stage it alongside its contextual
+	/// variables. We do not bind to the RingBuffer here to avoid
+	/// mutable/immutable borrow conflicts on the staging vector.
+	fn stage_maps<'a>(
+		engine: &'a BpfEngine,
+		shared_registry: &SharedRegistry,
+	) -> Vec<StagedTelemetryMap<'a>> {
 		let mut telemetry_maps = Vec::new();
 
 		for (mod_name, stored_skel) in engine.active_skeletons.iter() {
@@ -53,12 +63,16 @@ impl TelemetryPipeline {
 			}
 		}
 
-		/*
-		 * Phase 2: Ringbuffer Binding
-		 * With the staging vector fully populated and locked from further
-		 * mutation, we safely iterate and borrow the map handles to construct
-		 * the unified, high-frequency telemetry pipeline.
-		 */
+		telemetry_maps
+	}
+
+	/// Phase 2: Ringbuffer Binding
+	/// With the staging vector fully populated and locked from further
+	/// mutation, we safely iterate and borrow the map handles to construct
+	/// the unified, high-frequency telemetry pipeline.
+	fn bind_ringbuffer<'a>(
+		telemetry_maps: Vec<StagedTelemetryMap<'a>>,
+	) -> Result<Option<RingBuffer<'a>>> {
 		let mut ringbuf_builder = RingBufferBuilder::new();
 		let mut has_ringbuf = false;
 
