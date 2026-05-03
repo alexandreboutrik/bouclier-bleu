@@ -30,7 +30,7 @@ set -uo pipefail
 : "${ANALYSIS_DIR:="${MAIN_DIR}/target/code-analysis"}"
 
 # The Rust-related directories to scan
-TARGET_DIRS=("cli" "core" "modules" "xtask")
+TARGET_DIRS=()
 
 # ==========================================
 # COMMAND LINE ARGUMENT PARSING
@@ -41,10 +41,13 @@ while [ $# -ne 0 ]; do
 	"-help" | "-h" | "help")
 		BB_HELP=1
 		;;
-	*)
+	-*)
 		echo "Error: Unknown argument '${1}'"
 		echo
 		BB_HELP=1
+		;;
+	*)
+		TARGET_DIRS+=("${1}")
 		;;
 	esac
 	shift
@@ -58,17 +61,18 @@ function print_help() {
 	if [ "${BB_HELP}" != "1" ]; then return; fi
 
 	echo "USAGE:"
-	echo "  ./scripts/analyze.sh [OPTIONS]"
+	echo "  ./scripts/complexity.sh [OPTIONS] [DIRECTORIES...]"
 	echo
 	echo "DESCRIPTION:"
-	echo "  Executes rust-code-analysis-cli across the userland Rust workspace crates"
-	echo "  and formats the output into detailed file summaries."
+	echo "  Executes rust-code-analysis-cli across the provided directories."
+	echo "  If no directories are specified, defaults to scanning the entire workspace."
 	echo
 	echo "OPTIONS:"
 	echo "  -help, -h               Display this help message and exit."
 	echo
 	echo "EXAMPLES:"
-	echo "  $ ./scripts/analyze.sh"
+	echo "  $ ./scripts/complexity.sh"
+	echo "  $ ./scripts/complexity.sh core bpf"
 	exit 0
 }
 
@@ -107,7 +111,7 @@ function run_analysis() {
 			mkdir -p "${out_path}"
 
 			# Run analysis; silence stdout but keep stderr for debugging
-			if ! rust-code-analysis-cli --metrics -O json -p "${target_path}" -o "${out_path}" >/dev/null; then
+			if ! rust-code-analysis-cli --metrics -O json -p "${target_path}" -o "${out_path}" -X "*vmlinux*" >/dev/null; then
 				echo "  [-] Error: rust-code-analysis-cli failed on ${dir}."
 			fi
 		else
@@ -268,6 +272,11 @@ function print_report() {
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
+
+# If no directories were provided, fallback to the workspace defaults
+if [ ${#TARGET_DIRS[@]} -eq 0 ]; then
+	TARGET_DIRS=("cli" "core" "modules")
+fi
 
 print_help
 init_env

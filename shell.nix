@@ -14,6 +14,7 @@ pkgs.mkShell {
     # Rust Toolchain
 	rust-toolchain
 	shfmt
+	rust-code-analysis
 
     # C/eBPF Compilers and Tools
 	bpftools jq
