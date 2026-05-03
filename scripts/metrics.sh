@@ -140,12 +140,25 @@ function gather_static_metrics() {
 	fi
 
 	# 3. Tests
+	# First, count inline Unit Tests in the source directories by looking for
+	# the #[test] macro
+	local unit_count=0
+	unit_count=$(grep -rhoE '^\s*#\[test\]' "${MAIN_DIR}/modules/src" "${MAIN_DIR}/core/src" "${MAIN_DIR}/cli/src" 2>/dev/null | wc -l | tr -d ' ')
+
+	if [ "${unit_count}" -gt 0 ]; then
+		TESTS_COUNT=$((TESTS_COUNT + unit_count))
+		TESTS_DETAILS="${TESTS_DETAILS}\n      - unit: ${unit_count}"
+	fi
+
+	# Then count the external test suites
 	if [ -d "${TESTS_DIR}" ]; then
 		for category in component integration fuzzing benchmark threat; do
 			local cat_dir="${TESTS_DIR}/${category}"
 			if [ -d "${cat_dir}" ]; then
 				local count
-				count=$(find "${cat_dir}" -type f 2>/dev/null | wc -l | tr -d ' ')
+				# Refined to only count actual test scripts/code to avoid
+				# counting READMEs or data files
+				count=$(find "${cat_dir}" -type f \( -name '*.rs' -o -name '*.sh' \) 2>/dev/null | wc -l | tr -d ' ')
 				TESTS_COUNT=$((TESTS_COUNT + count))
 				if [ "${count}" -gt 0 ]; then
 					TESTS_DETAILS="${TESTS_DETAILS}\n      - ${category}: ${count}"
