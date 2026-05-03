@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Copyright 2026 The Bouclier Bleu Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use anyhow::{Context, Result};
+use libbpf_rs::{RingBuffer, RingBufferBuilder};
+use std::sync::Arc;
+
+use crate::bpf_manager::{bpf_loader, BpfEngine};
+use modules::SecurityModule;
+
+/// The Pipeline
+/// Manages the high-frequency asynchronous telemetry pipeline between
+/// kernel-space and user-space.
+pub struct TelemetryPipeline;
+
+impl TelemetryPipeline {
+	pub fn build<'a>(
+		engine: &'a BpfEngine,
+		shared_registry: &Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>,
+	) -> Result<Option<RingBuffer<'a>>> {
+		/*
+		 * Phase 1: Telemetry Staging
+		 * Extract the 'alerts' map handle and stage it alongside its
+		 * contextual variables. We do not bind to the RingBuffer here to avoid
+		 * mutable/immutable borrow conflicts on the staging vector.
+		 */
+		let mut telemetry_maps = Vec::new();
+
+		for (mod_name, stored_skel) in engine.active_skeletons.iter() {
+			let module_slug = mod_name.to_string();
+			let registry_clone = Arc::clone(shared_registry);
+
+			if let Ok(alerts_map) = bpf_loader::get_map(&**stored_skel, "alerts") {
+				telemetry_maps.push((alerts_map, module_slug, registry_clone));
+			} else {
+				println!(
+					"· [Warning] Standard 'alerts' map not found in module: {}",
+					mod_name
+				);
+			}
+		}
+
+		/*
+		 * Phase 2: Ringbuffer Binding
+		 * With the staging vector fully populated and locked from further
+		 * mutation, we safely iterate and borrow the map handles to construct
+		 * the unified, high-frequency telemetry pipeline.
+		 */
+		let mut ringbuf_builder = RingBufferBuilder::new();
+		let mut has_ringbuf = false;
+
+		for (alerts_map, module_slug, registry_clone) in &telemetry_maps {
+			let slug = module_slug.clone();
+			let reg = Arc::clone(registry_clone);
+
+			ringbuf_builder
+				.add(alerts_map, move |data| {
+					if let Some(user_mod) = reg.iter().find(|m| m.slug() == slug) {
+						user_mod.process_event(data);
+					}
+					0 // continue polling
+				})
+				.context("Failed to bind RingBuffer callback")?;
+
+			has_ringbuf = true;
+		}
+
+		if has_ringbuf {
+			Ok(Some(
+				ringbuf_builder
+					.build()
+					.context("Failed to build unified BPF RingBuffer")?,
+			))
+		} else {
+			println!("· [Info] No telemetry maps found. Operating in silent enforcement mode.");
+			Ok(None)
+		}
+	}
+}
