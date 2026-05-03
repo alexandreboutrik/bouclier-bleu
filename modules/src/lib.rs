@@ -206,7 +206,7 @@ macro_rules! define_security_module {
             }
         }
 
-        impl crate::SecurityModule for $struct_name {
+        impl $crate::SecurityModule for $struct_name {
             fn name(&self) -> &'static str {
                 $name
             }
@@ -259,7 +259,7 @@ macro_rules! define_security_module {
                          * This guarantees zero-code integration for all
                          * modules.
                          */
-                        crate::emit_siem_event($slug, &alert);
+                        $crate::emit_siem_event($slug, &alert);
 
                         // Pass the validated payload to the localized logic
                         // block
@@ -290,7 +290,7 @@ macro_rules! define_security_module {
              * down to the heuristic logic while maintaining the strict
              * safe-Rust boundary enforced by the IoC registry.
              */
-            fn init(&self, _provider: &dyn crate::MapProvider) -> Result<(), String> {
+            fn init(&self, _provider: &dyn $crate::MapProvider) -> Result<(), String> {
                 $(
                     $init_closure(_provider)?;
                 )?
@@ -452,19 +452,23 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
 	};
 
 	// Serialize and write to disk
-	if let Ok(json_string) = serde_json::to_string(&envelope) {
-		if let Ok(mut file_guard) = file_mutex.lock() {
-			if let Some(file) = file_guard.as_mut() {
-				/*
-				 * Telemetry Sink Validation
-				 * explicitly catch and log write failures to alert operators
-				 * of potential disk exhaustion or SIEM ingestion issues.
-				 */
-				if let Err(e) = writeln!(file, "{}", json_string) {
-					eprintln!("Bouclier Bleu [ERROR]: Failed to write SIEM event: {}", e);
-				}
-			}
-		}
+	let Ok(json_string) = serde_json::to_string(&envelope) else {
+		return;
+	};
+	let Ok(mut file_guard) = file_mutex.lock() else {
+		return;
+	};
+	let Some(file) = file_guard.as_mut() else {
+		return;
+	};
+
+	/*
+	 * Telemetry Sink Validation
+	 * explicitly catch and log write failures to alert operators
+	 * of potential disk exhaustion or SIEM ingestion issues.
+	 */
+	if let Err(e) = writeln!(file, "{}", json_string) {
+		eprintln!("Bouclier Bleu [ERROR]: Failed to write SIEM event: {}", e);
 	}
 }
 

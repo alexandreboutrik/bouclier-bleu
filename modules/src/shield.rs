@@ -109,10 +109,9 @@ define_security_module!(
 		 * or mapped in user-space.
 		 */
 		for path in target_files {
-			if let Ok(key_bytes) = crate::get_secure_hardware_key(path) {
-				if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
+			let Ok(key_bytes) = crate::get_secure_hardware_key(path) else { continue; };
+			if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
 					eprintln!("Bouclier Bleu [WARNING]: Could not protect {}: {}", path, e);
-				}
 			}
 		}
 		Ok(())

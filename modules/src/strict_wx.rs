@@ -116,8 +116,8 @@ define_security_module!(
 						rustix::fs::Mode::empty(),
 					) {
 						let file = std::fs::File::from(fd);
-						if let Ok(Some(fd_xattr)) = file.get_xattr("user.bouclier.strict_wx") {
-							if fd_xattr == b"1" {
+						match file.get_xattr("user.bouclier.strict_wx") {
+							Ok(Some(fd_xattr)) if fd_xattr == b"1" => {
 								if let Ok(metadata) = file.metadata() {
 									let key_bytes = crate::generate_hardware_key(&metadata);
 
@@ -134,6 +134,7 @@ define_security_module!(
 									println!("Bouclier Bleu [Setup]: W^X strict enforcement activated for {:?}", entry.path());
 								}
 							}
+							_ => {}
 						}
 					}
 				}

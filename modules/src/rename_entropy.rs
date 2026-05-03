@@ -116,14 +116,15 @@ fn neutralize_threat_tree(target_ppid: u32) {
 	 * if we kill the parent orchestrator first.
 	 */
 	for (pid, process) in sys.processes() {
-		if let Some(parent_pid) = process.parent() {
-			if parent_pid == target {
-				process.kill_with(Signal::Kill);
-				println!(
-					"Bouclier Bleu [REMEDIATION]: Collateral worker terminated -> PID: {}",
-					pid
-				);
-			}
+		if process
+			.parent()
+			.is_some_and(|parent_pid| parent_pid == target)
+		{
+			process.kill_with(Signal::Kill);
+			println!(
+				"Bouclier Bleu [REMEDIATION]: Collateral worker terminated -> PID: {}",
+				pid
+			);
 		}
 	}
 
@@ -325,11 +326,9 @@ define_security_module!(
 				// `new_dir` parameter provided to the LSM hook points to the
 				// destination directory's inode structure, not the individual
 				// file itself.
-				if entry.file_type().is_dir() {
-					if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
-		bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-			.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
-	}
+				if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
+					bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+						.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
 				}
 			}
 

@@ -43,13 +43,15 @@ impl DaemonConfig {
 
 		for path in search_paths {
 			if Path::new(path).exists() {
-				if let Ok(metadata) = fs::metadata(path) {
-					if metadata.uid() != 0 {
-						panic!(
-							"FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.",
-							path
-						);
-					}
+				let Ok(metadata) = fs::metadata(path) else {
+					continue;
+				};
+
+				if metadata.uid() != 0 {
+					panic!(
+						"FATAL: Configuration file {} is not owned by root! Aborting to prevent privilege escalation.",
+						path
+					);
 				}
 
 				match fs::read_to_string(path) {

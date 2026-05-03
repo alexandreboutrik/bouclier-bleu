@@ -72,15 +72,12 @@ fn is_post_2025_vfs() -> bool {
 
 	// Parse the major and minor versions
 	let parts: Vec<&str> = release.split('.').collect();
-	if parts.len() >= 2 {
-		if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-			if major > 6 {
-				return true;
-			} else if major == 6 && minor >= 12 {
-				return true;
-			}
-			return false;
-		}
+	if parts.len() < 2 {
+		return true; // malformed
+	}
+
+	if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+		return major > 6 || (major == 6 && minor >= 12);
 	}
 
 	true // Fallback if parsing fails
@@ -161,26 +158,26 @@ fn main() -> Result<()> {
 					.progs_mut()
 					.find(|p| p.name().to_string_lossy() == new_hook)
 				{
-					let _ = prog.set_autoload(true);
+					prog.set_autoload(true);
 				}
 				if let Some(mut prog) = obj
 					.progs_mut()
 					.find(|p| p.name().to_string_lossy() == old_hook)
 				{
-					let _ = prog.set_autoload(false);
+					prog.set_autoload(false);
 				}
 			} else {
 				if let Some(mut prog) = obj
 					.progs_mut()
 					.find(|p| p.name().to_string_lossy() == old_hook)
 				{
-					let _ = prog.set_autoload(true);
+					prog.set_autoload(true);
 				}
 				if let Some(mut prog) = obj
 					.progs_mut()
 					.find(|p| p.name().to_string_lossy() == new_hook)
 				{
-					let _ = prog.set_autoload(false);
+					prog.set_autoload(false);
 				}
 			}
 
@@ -191,13 +188,13 @@ fn main() -> Result<()> {
 				.progs_mut()
 				.find(|p| p.name().to_string_lossy() == new_rename)
 			{
-				let _ = prog.set_autoload(true);
+				prog.set_autoload(true);
 			}
 			if let Some(mut prog) = obj
 				.progs_mut()
 				.find(|p| p.name().to_string_lossy() == old_rename)
 			{
-				let _ = prog.set_autoload(false);
+				prog.set_autoload(false);
 			}
 
 			Ok(())

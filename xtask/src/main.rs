@@ -116,7 +116,7 @@ fn run_tests(
 	let mut execute_suite = |cat: &str, target: Option<&str>| -> TaskResult<()> {
 		let (res, time) = match cat {
 			"unit" => run_test_suite("Unit", "unit", "rs", target, |_, _| {
-				format!("cargo test -q --release --lib")
+				"cargo test -q --release --lib".to_string()
 			})?,
 			"component" => run_test_suite(
 				"Component (eBPF Defenses)",
@@ -211,12 +211,10 @@ where
 			let stem = path.file_stem().unwrap().to_string_lossy();
 			let full_name = path.file_name().unwrap().to_string_lossy();
 
-			// Support targeting by either exact filename (exec_block.sh) or stem
-			// (exec_block)
-			if let Some(target) = target_test {
-				if target != stem && target != full_name {
-					continue;
-				}
+			// Support targeting by either exact filename (exec_block.sh) or
+			// stem (exec_block)
+			if target_test.is_some_and(|target| target != stem && target != full_name) {
+				continue;
 			}
 
 			let display_name = if ext == "sh" {
@@ -240,7 +238,7 @@ where
 			let elapsed = start_time.elapsed();
 
 			if dir_name == "benchmark" && passed {
-				if let Ok(output) = Command::new("incus")
+				match Command::new("incus")
 					.args([
 						"exec",
 						VM_NAME,
@@ -250,7 +248,7 @@ where
 					])
 					.output()
 				{
-					if output.status.success() {
+					Ok(output) if output.status.success() => {
 						let metrics = String::from_utf8_lossy(&output.stdout).to_string();
 						let bench_path = project_root().join("tests").join("benchmark_results.md");
 
@@ -264,14 +262,15 @@ where
 							let _ = file.write_all(metrics.as_bytes());
 						}
 					}
+					_ => {} // Do nothing if it fails or status is not success
 				}
 			}
 
-			if result.is_ok() {
-				println!("[SUCCESS] Passed: {}", display_name);
-			} else {
+			if let Err(err) = result {
 				eprintln!("\n[ERROR] {} test failed: {}", dir_name, display_name);
-				eprintln!("{}", result.unwrap_err());
+				eprintln!("{}", err);
+			} else {
+				println!("[SUCCESS] Passed: {}", display_name);
 			}
 
 			results.push(TestRecord {
@@ -320,7 +319,7 @@ fn ensure_base_image(image_alias: &str) -> TaskResult<()> {
 	if Command::new("incus")
 		.args(["image", "info", image_alias])
 		.output()
-		.map_or(false, |o| o.status.success())
+		.is_ok_and(|o| o.status.success())
 	{
 		return Ok(());
 	}
@@ -388,7 +387,7 @@ fn ensure_no_network_profile() -> TaskResult<()> {
 	let exists = Command::new("incus")
 		.args(["profile", "show", "bb-no-network"])
 		.output()
-		.map_or(false, |o| o.status.success());
+		.is_ok_and(|o| o.status.success());
 
 	if !exists {
 		println!("[INFO] Creating 'bb-no-network' profile from default...");
@@ -560,7 +559,7 @@ fn inject_kernel_parameters() -> TaskResult<()> {
 "#;
 
 	let status = Command::new("incus")
-		.args(&["exec", VM_NAME, "--", "bash", "-c", enable_lsm_script])
+		.args(["exec", VM_NAME, "--", "bash", "-c", enable_lsm_script])
 		.status()
 		.expect("Failed to execute VM process");
 
@@ -630,7 +629,7 @@ fn await_guest_agent() -> TaskResult<()> {
 		if Command::new("incus")
 			.args(["exec", VM_NAME, "--", "echo", "ready"])
 			.output()
-			.map_or(false, |o| o.status.success())
+			.is_ok_and(|o| o.status.success())
 		{
 			return Ok(());
 		}
@@ -727,7 +726,7 @@ fn generate_markdown_report(
 	let bench_path = project_root().join("tests").join("benchmark_results.md");
 	if bench_path.exists() {
 		if let Ok(bench_data) = fs::read_to_string(&bench_path) {
-			report.push_str("\n");
+			report.push('\n');
 			report.push_str(&bench_data);
 		}
 		let _ = fs::remove_file(&bench_path);
