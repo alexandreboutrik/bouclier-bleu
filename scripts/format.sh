@@ -24,6 +24,7 @@ set -uo pipefail
 # ==========================================
 : "${BB_HELP:=0}"
 : "${BB_MODE:=""}"
+: "${BB_LINT:=0}"
 
 # Resolve the absolute path of the project root
 : "${SCRIPT_DIR:="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"}"
@@ -51,6 +52,9 @@ while [ $# -ne 0 ]; do
 	case "${1}" in
 	"-help" | "-h" | "help")
 		BB_HELP=1
+		;;
+	"-lint" | "-l" | "lint")
+		BB_LINT=1
 		;;
 	"apply")
 		BB_MODE="apply"
@@ -83,10 +87,12 @@ function print_help() {
 	echo
 	echo "OPTIONS:"
 	echo "  -help, -h               Display this help message and exit."
+	echo "  -lint, -l               Run Clippy to check for logic/performance issues."
 	echo
 	echo "EXAMPLES:"
 	echo "  $ ./scripts/format.sh apply"
 	echo "  $ ./scripts/format.sh check"
+	echo "  $ ./scripts/format.sh check -lint"
 	exit 0
 }
 
@@ -110,6 +116,10 @@ function init_env() {
 		RUST_FLAGS=""
 		CLANG_FLAGS="-i"
 		SHFMT_FLAGS="-w"
+	fi
+
+	if [ "${BB_LINT}" -eq 1 ]; then
+		echo "Option: LINT (Clippy will be executed)"
 	fi
 }
 
@@ -168,6 +178,34 @@ function format_bash() {
 	fi
 }
 
+function run_clippy() {
+	if [ "${BB_LINT}" != "1" ]; then return; fi
+
+	echo -e "\n➤ Running Cargo Clippy..."
+
+	pushd "${MAIN_DIR}" >/dev/null || exit 1
+
+	if command -v cargo-clippy >/dev/null 2>&1 || command -v cargo >/dev/null 2>&1; then
+		# --workspace: Runs across all crates
+		# --all-targets: Checks tests and benchmarks too
+		# -- -D warnings: Deny warnings, treating them as hard errors
+		cargo clippy --workspace --all-targets -- -D warnings ||
+			{
+				echo -e "\n[-] Clippy found issues. Please fix the w
+arnings above. Exiting."
+				exit 1
+			}
+
+		echo "  [+] Clippy checks passed successfully. Your code is clean!"
+
+	else
+		echo "  [-] Error: Cargo/Clippy is not installed or not in your PATH."
+		exit 1
+	fi
+
+	popd >/dev/null || exit 1
+}
+
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
@@ -180,5 +218,6 @@ init_env
 format_rust
 format_c
 format_bash
+run_clippy
 
 echo -e "\nFormatting process finished successfully!"
