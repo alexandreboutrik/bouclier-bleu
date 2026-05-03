@@ -7,7 +7,7 @@ members = [
     "xtask"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 authors = ["Alexandre Boutrik"]
 license = "Apache-2.0"
