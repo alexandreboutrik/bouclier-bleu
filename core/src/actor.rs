@@ -15,7 +15,6 @@
 // limitations under the License.
 
 use std::sync::{mpsc, Arc};
-use std::thread;
 use std::time::Duration;
 
 use libbpf_rs::RingBuffer;
@@ -42,26 +41,50 @@ impl<'a> DaemonActor<'a> {
 		// MAIN ACTOR LOOP
 		loop {
 			/*
-			 * Process non-blocking IPC commands from the Control Plane
-			 * Bound the channel drain to a maximum of 10 messages per tick.
+			 * Inverted Yielding (Anti-DoS)
+			 * We block on the IPC channel instead of the kernel RingBuffer.
+			 * This instantly wakes the thread when a CLI command arrives (0ms
+			 * latency), eliminating the timeout vulnerabilities while still
+			 * capping idle CPU usage.
 			 */
-			for msg in self.rx.try_iter().take(10) {
-				let response = self.handle_command(msg.cmd);
-				let _ = msg.reply.send(response);
+			match self.rx.recv_timeout(Duration::from_millis(50)) {
+				Ok(msg) => {
+					let response = self.handle_command(msg.cmd);
+					let _ = msg.reply.send(response);
+
+					/*
+					 * Bounded Queue Draining (Anti-Starvation)
+					 * We process up to 10 backlogged messages per tick. If a
+					 * flood of IPC commands occurs, this forces the thread to
+					 * break out and yield CPU to `rb.poll`, ensuring zero
+					 * telemetry loss.
+					 */
+					for pending_msg in self.rx.try_iter().take(10) {
+						let response = self.handle_command(pending_msg.cmd);
+						let _ = pending_msg.reply.send(response);
+					}
+				}
+				Err(mpsc::RecvTimeoutError::Timeout) => {
+					// Expected timeout every 50ms; proceed to telemetry
+					// polling
+				}
+				Err(mpsc::RecvTimeoutError::Disconnected) => {
+					eprintln!("Bouclier Bleu [Fatal]: IPC Control Plane disconnected.");
+					break;
+				}
 			}
 
 			// Service the Kernel Telemetry Queues
 			if let Some(rb) = &self.ring_buffer {
-				if let Err(e) = rb.poll(Duration::from_millis(50)) {
+				/*
+				 * Non-Blocking Poll
+				 * We pass a 0ms duration because we already yielded time
+				 * during the IPC recv_timeout phase. This simply flushes any
+				 * pending  kernel events and immediately returns.
+				 */
+				if let Err(e) = rb.poll(Duration::from_millis(0)) {
 					eprintln!("Bouclier Bleu [Warning]: Telemetry poll interrupted: {}", e);
 				}
-			} else {
-				/*
-				 * If no telemetry maps are loaded, fallback to a standard
-				 * sleep so we don't accidentally pin the CPU to 100% in a
-				 * busy-wait loop.
-				 */
-				thread::sleep(Duration::from_millis(50));
 			}
 		}
 	}

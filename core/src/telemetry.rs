@@ -16,6 +16,7 @@
 
 use anyhow::{Context, Result};
 use libbpf_rs::{RingBuffer, RingBufferBuilder};
+use std::panic;
 use std::sync::Arc;
 
 use crate::bpf_manager::{bpf_loader, BpfEngine};
@@ -83,7 +84,24 @@ impl TelemetryPipeline {
 			ringbuf_builder
 				.add(alerts_map, move |data| {
 					if let Some(user_mod) = reg.iter().find(|m| m.slug() == slug) {
-						user_mod.process_event(data);
+						/*
+						 * Fault Isolation Boundary
+						 * Wraps the user module invocation in a catch_unwind
+						 * boundary. This prevents a panicking module from
+						 * unwinding across the FFI boundary into libbpf C
+						 * code, which is Undefined Behavior and would fatally
+						 * crash the telemetry consumer thread.
+						 */
+						let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+							user_mod.process_event(data);
+						}));
+
+						if let Err(err) = result {
+							eprintln!(
+								"· [Fatal] Module '{}' panicked during event processing: {:?}",
+								slug, err
+							);
+						}
 					}
 					0 // continue polling
 				})

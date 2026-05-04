@@ -40,8 +40,8 @@ pub fn setup_secure_dir() -> Result<(), String> {
 		));
 	}
 
-	if let Ok(meta) = fs::metadata(SOCKET_DIR) {
-		if meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
+	if let Ok(meta) = fs::symlink_metadata(SOCKET_DIR) {
+		if meta.is_symlink() || meta.uid() != 0 || (meta.mode() & 0o777) != 0o700 {
 			eprintln!(
                 "Bouclier Bleu [WARNING]: IPC directory {} has insecure permissions (Potential Pre-Staging Attack). Auto-remediating...",
                 SOCKET_DIR
@@ -49,12 +49,19 @@ pub fn setup_secure_dir() -> Result<(), String> {
 
 			/*
 			 * NUKE AND PAVE
-			 * Wipe the tainted directory to destroy any pre-staged sockets,
-			 * symlinks, or open file descriptors.
+			 * If the path is a symlink, we simply remove the file/link.
+			 * If it is an actual directory, we can safely wipe it.
 			 */
-			if let Err(e) = fs::remove_dir_all(SOCKET_DIR) {
+			if meta.is_symlink() || meta.is_file() {
+				if let Err(e) = fs::remove_file(SOCKET_DIR) {
+					return Err(format!(
+						"FATAL: Failed to remove compromised symlink/file: {}",
+						e
+					));
+				}
+			} else if let Err(e) = fs::remove_dir_all(SOCKET_DIR) {
 				return Err(format!(
-					"FATAL: Failed to wipe compromised IPC directory during remediation: {}",
+					"FATAL: Failed to wipe compromised IPC directory: {}",
 					e
 				));
 			}
@@ -92,6 +99,16 @@ pub fn bind_socket() -> Result<UnixListener, String> {
 
 	// Restore the original umask
 	rustix::process::umask(old_umask);
+
+	/*
+	 * Socket Validation (Post-Bind)
+	 * Detects if an attacker managed to pre-create the socket or replace
+	 * it in the microsecond window between remove_file and bind.
+	 */
+	if fs::symlink_metadata(SOCKET_PATH).is_ok_and(|meta| meta.uid() != 0 || meta.is_symlink()) {
+		let _ = fs::remove_file(SOCKET_PATH);
+		return Err("FATAL: IPC socket ownership validation failed (Possible TOCTOU).".to_string());
+	}
 
 	Ok(listener)
 }

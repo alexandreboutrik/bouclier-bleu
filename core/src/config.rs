@@ -16,7 +16,8 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -43,7 +44,18 @@ impl DaemonConfig {
 
 		for path in search_paths {
 			if Path::new(path).exists() {
-				let Ok(metadata) = fs::metadata(path) else {
+				/*
+				 * Descriptor-Oriented File Operations
+				 * We open the file first, then request metadata on the active
+				 * descriptor. This completely neutralizes TOCTOU symlink/swap
+				 * attacks between the permission check and the actual read
+				 * operation.
+				 */
+				let Ok(mut file) = File::open(path) else {
+					continue;
+				};
+
+				let Ok(metadata) = file.metadata() else {
 					continue;
 				};
 
@@ -54,16 +66,20 @@ impl DaemonConfig {
 					);
 				}
 
-				match fs::read_to_string(path) {
-					Ok(contents) => match toml::from_str(&contents) {
+				let mut contents = String::new();
+				match file.read_to_string(&mut contents) {
+					Ok(_) => match toml::from_str(&contents) {
 						Ok(config) => {
 							println!("· [Config] Loaded configuration from {}", path);
 							return config;
 						}
-						Err(e) => panic!(
-							"FATAL: Failed to parse TOML in {}: {}. Aborting to prevent a fail-open state.",
-							path, e
-						),
+						Err(e) => {
+							eprintln!(
+                                "· [Error] Failed to parse TOML in {}: {}. Falling back to default configuration to avoid fail-open state.",
+                                path, e
+                            );
+							return Self::default();
+						}
 					},
 					Err(e) => eprintln!("· [Warning] Failed to read {}: {}", path, e),
 				}
