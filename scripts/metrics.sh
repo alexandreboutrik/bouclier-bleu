@@ -133,7 +133,7 @@ function gather_static_metrics() {
 
 	# 2. Detectors
 	if [ -d "${MODULES_DIR}" ]; then
-		DETECTORS_COUNT=$(find "${MODULES_DIR}" -type f -name '*.rs' ! -name 'lib.rs' | wc -l | tr -d ' ')
+		DETECTORS_COUNT=$(find "${MODULES_DIR}" -maxdepth 1 -type f -name '*.rs' ! -name 'lib.rs' | wc -l | tr -d ' ')
 		echo "  [+] Found ${DETECTORS_COUNT} Detectors/Modules."
 	else
 		echo "  [-] Modules directory not found at ${MODULES_DIR}"
