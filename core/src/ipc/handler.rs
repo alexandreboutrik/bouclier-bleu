@@ -163,3 +163,62 @@ fn dispatch_command(
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::io::Write;
+	use std::os::unix::net::UnixStream;
+
+	/*
+	 * Stream Parsing Validation
+	 * We utilize UnixStream pairs to simulate the Control Plane (CLI) sending
+	 * payloads to the Daemon without binding to actual file system sockets.
+	 * This ensures the tests remain isolated, parallelizable, and do not
+	 * require root privileges to execute.
+	 */
+
+	#[test]
+	fn test_parse_command_status() {
+		let (mut tx, mut rx) = UnixStream::pair().expect("Failed to create socket pair");
+		tx.write_all(b"STATUS\n").unwrap();
+		drop(tx); // Close the sender to signal EOF and trigger the read
+
+		let result = parse_command(&mut rx).expect("Parser should not fail");
+		assert!(matches!(result, Some(DaemonCmd::Status)));
+	}
+
+	#[test]
+	fn test_parse_command_enable_module() {
+		let (mut tx, mut rx) = UnixStream::pair().expect("Failed to create socket pair");
+		tx.write_all(b"ENABLE rename_entropy\n").unwrap();
+		drop(tx);
+
+		let result = parse_command(&mut rx).expect("Parser should not fail");
+		match result {
+			Some(DaemonCmd::Enable(target)) => assert_eq!(target, "rename_entropy"),
+			_ => panic!("Expected Enable command"),
+		}
+	}
+
+	#[test]
+	fn test_parse_command_invalid_input() {
+		let (mut tx, mut rx) = UnixStream::pair().expect("Failed to create socket pair");
+		// Send a malformed payload
+		tx.write_all(b"NUKE_KERNEL\n").unwrap();
+		drop(tx);
+
+		let result = parse_command(&mut rx);
+		assert!(result.is_err(), "Parser should reject unknown commands");
+		assert_eq!(result.unwrap_err(), "Unknown command");
+	}
+
+	#[test]
+	fn test_parse_command_empty_stream() {
+		let (tx, mut rx) = UnixStream::pair().expect("Failed to create socket pair");
+		drop(tx); // Immediately drop to simulate a dropped connection
+
+		let result = parse_command(&mut rx).expect("Parser should handle graceful EOF");
+		assert!(result.is_none(), "Expected None for an empty stream");
+	}
+}

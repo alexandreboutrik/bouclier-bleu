@@ -28,3 +28,80 @@ pub mod mount_secure;
 pub mod rename_entropy;
 pub mod shield;
 pub mod strict_wx;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::common::macros::build_registry;
+	use crate::common::traits::SecurityModule;
+
+	// Dummy alert struct for testing the payload pipeline
+	#[derive(serde::Serialize)]
+	struct DummyAlert {
+		severity: u8,
+	}
+
+	// Dummy safe parser
+	fn dummy_parser(data: &[u8]) -> Result<DummyAlert, &'static str> {
+		if data.is_empty() {
+			Err("Empty payload")
+		} else {
+			Ok(DummyAlert { severity: data[0] })
+		}
+	}
+
+	/*
+	 * Declarative Macro Invocation
+	 * We synthesize a transient security module exactly as the production
+	 * heuristics do, ensuring the generated boilerplate satisfies all IoC
+	 * traits.
+	 */
+	define_security_module!(
+		struct: DummyHeuristic,
+		name: "Dummy Heuristic Engine",
+		slug: "dummy_heur",
+		parser: dummy_parser,
+		handler: |_alert: DummyAlert| {
+			// Localized logic block (No-op for test)
+		}
+	);
+
+	#[test]
+	fn test_macro_generated_module_state() {
+		let module = DummyHeuristic::new();
+
+		// 1. Assert metadata mapping
+		assert_eq!(module.name(), "Dummy Heuristic Engine");
+		assert_eq!(module.slug(), "dummy_heur");
+
+		// 2. Assert initial AtomicBool status (should default to true)
+		assert!(module.status());
+
+		// 3. Thread-safe toggling
+		module.toggle(false);
+		assert!(
+			!module.status(),
+			"Module failed to toggle offline via SeqCst ordering"
+		);
+
+		module.toggle(true);
+		assert!(
+			module.status(),
+			"Module failed to toggle online via SeqCst ordering"
+		);
+	}
+
+	#[test]
+	fn test_build_registry_instantiation() {
+		/*
+		 * IoC Registry Validation
+		 * Ensures the central builder successfully maps all production
+		 * heuristics into the dynamic trait object vector without panicking.
+		 */
+		let registry = build_registry();
+		assert!(
+			!registry.is_empty(),
+			"Registry failed to build the defense matrix"
+		);
+	}
+}

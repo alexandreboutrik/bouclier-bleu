@@ -138,3 +138,77 @@ impl<'a> DaemonActor<'a> {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::bpf_manager::BpfEngine;
+	use crate::ipc::DaemonCmd;
+	use std::sync::mpsc;
+
+	/*
+	 * Actor State Verification
+	 * These tests validate the synchronous command routing and string
+	 * formatting logic of the DaemonActor. We inject an empty BpfEngine and
+	 * Registry to simulate a pristine, unloaded state, bypassing complex
+	 * kernel dependencies.
+	 */
+
+	fn setup_mock_actor<'a>(engine: &'a BpfEngine) -> DaemonActor<'a> {
+		let (_, rx) = mpsc::channel();
+		let shared_registry = Arc::new(vec![]);
+
+		DaemonActor {
+			rx,
+			engine,
+			ring_buffer: None,
+			shared_registry,
+		}
+	}
+
+	#[test]
+	fn test_handle_command_status() {
+		let engine = BpfEngine::default();
+		let actor = setup_mock_actor(&engine);
+
+		let response = actor.handle_command(DaemonCmd::Status);
+		assert_eq!(
+			response,
+			"Bouclier Bleu EDR Status: Kernel Engine Running\n"
+		);
+	}
+
+	#[test]
+	fn test_handle_command_list_empty() {
+		let engine = BpfEngine::default();
+		let actor = setup_mock_actor(&engine);
+
+		let response = actor.handle_command(DaemonCmd::List);
+		assert_eq!(response, "MODULE REGISTRY:\n");
+	}
+
+	#[test]
+	fn test_toggle_module_not_loaded() {
+		let engine = BpfEngine::default();
+		let actor = setup_mock_actor(&engine);
+
+		/*
+		 * Slow Path Rejection Test
+		 * Attempting to enable a module that has not been mapped into kernel
+		 * memory should safely fail and return an instructional error string.
+		 */
+		let response = actor.handle_command(DaemonCmd::Enable("exec_block".to_string()));
+
+		assert!(response.contains("ERROR: Module 'exec_block' is not loaded in kernel memory."));
+	}
+
+	#[test]
+	fn test_toggle_module_disable_not_active() {
+		let engine = BpfEngine::default();
+		let actor = setup_mock_actor(&engine);
+
+		let response = actor.handle_command(DaemonCmd::Disable("shield".to_string()));
+
+		assert!(response.contains("ERROR: Module 'shield' is not currently active\n"));
+	}
+}

@@ -20,6 +20,7 @@ use std::sync::mpsc;
 ///
 /// This enum acts as the serialization boundary, ensuring only syntactically
 /// valid directives propagate to the core execution engine.
+#[derive(Debug)]
 pub enum DaemonCmd {
 	Status,
 	List,

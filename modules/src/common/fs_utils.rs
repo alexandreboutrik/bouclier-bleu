@@ -88,3 +88,55 @@ pub fn get_secure_hardware_key<P: AsRef<Path>>(path: P) -> std::io::Result<[u8; 
 	let metadata = file.metadata()?;
 	Ok(generate_hardware_key(&metadata))
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::env;
+	use std::fs::File;
+
+	#[test]
+	fn test_build_secure_walker_constraints() {
+		/*
+		 * Defensive Recursion Validation
+		 * Ensures the walker is initialized with our strict anti-exhaustion
+		 * parameters (max_depth=20, follow_links=false). While we can't easily
+		 * assert the internal state of `walkdir`, we can verify it doesn't
+		 * panic upon instantiation with valid paths.
+		 */
+		let temp_dir = env::temp_dir();
+		let walker = build_secure_walker(&temp_dir);
+
+		// Ensure it produces an iterator
+		assert!(walker.into_iter().next().is_some());
+	}
+
+	#[test]
+	fn test_generate_hardware_key_alignment() {
+		/*
+		 * eBPF dir_id Memory Layout Assertion
+		 * We create a temporary file to extract real kernel metadata,
+		 * then validate that our pure-Rust bitwise translation maps correctly
+		 * to a 16-byte array, with the final 4 bytes acting as C-struct
+		 * padding (0s).
+		 */
+		let temp_dir = env::temp_dir();
+		let temp_file_path = temp_dir.join("bouclier_test_hw_key.tmp");
+
+		// Create a dummy file to generate valid OS metadata
+		File::create(&temp_file_path).expect("Failed to create temp test file");
+
+		let meta = std::fs::metadata(&temp_file_path).expect("Failed to read metadata");
+
+		let key = generate_hardware_key(&meta);
+
+		// 1. Length must be exactly 16 bytes for eBPF map alignment
+		assert_eq!(key.len(), 16);
+
+		// 2. The padding bytes (12..16) must remain strictly 0
+		assert_eq!(&key[12..16], &[0, 0, 0, 0]);
+
+		// Cleanup
+		let _ = std::fs::remove_file(temp_file_path);
+	}
+}

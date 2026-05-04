@@ -147,3 +147,78 @@ pub trait SecurityModule: Send + Sync {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_bpf_reader_u32_success() {
+		/*
+		 * Native Endianness Extraction Validation
+		 * Ensures that a valid 4-byte slice is correctly converted into a u32
+		 * without advancing the offset out of bounds.
+		 */
+		let data = 42u32.to_ne_bytes();
+		let mut reader = BpfReader::new(&data);
+
+		assert_eq!(reader.read_u32(), Ok(42));
+		assert_eq!(reader.offset, 4);
+	}
+
+	#[test]
+	fn test_bpf_reader_u32_underrun() {
+		/*
+		 * Buffer Underrun Mitigation
+		 * Validates that malformed eBPF payloads (e.g., truncated packets)
+		 * fail safely rather than causing a kernel/user boundary panic.
+		 */
+		let data = [0u8; 3]; // Intentionally 1 byte short
+		let mut reader = BpfReader::new(&data);
+
+		assert!(reader.read_u32().is_err());
+	}
+
+	#[test]
+	fn test_bpf_reader_string_success() {
+		/*
+		 * C-Style String Parsing
+		 * Verifies null-byte termination handling. The reader must stop
+		 * exactly at the null byte while advancing the offset by the full
+		 * `max_len`.
+		 */
+		let mut data = b"secret.txt\0".to_vec();
+		data.extend_from_slice(&[0u8; 5]); // Add padding
+
+		let mut reader = BpfReader::new(&data);
+		let result = reader.read_string(15);
+
+		assert_eq!(result, Ok("secret.txt".to_string()));
+		assert_eq!(reader.offset, 15);
+	}
+
+	#[test]
+	fn test_bpf_reader_string_sanitization() {
+		/*
+		 * Evasive Malware Sanitization
+		 * Ensures that non-printable ASCII characters (often used by rootkits
+		 * for log injection or terminal manipulation) are replaced with `?`.
+		 */
+		let payload = b"malware\x1B[31m.sh\0";
+		let mut reader = BpfReader::new(payload);
+
+		let result = reader.read_string(payload.len());
+		// \x1B is the ESC character, [ is printable, so it becomes
+		// malware?[31m.sh
+		assert_eq!(result.unwrap(), "malware?[31m.sh");
+	}
+
+	#[test]
+	fn test_bpf_reader_string_underrun() {
+		let data = b"short\0";
+		let mut reader = BpfReader::new(data);
+
+		// Attempting to read 10 bytes from a 6-byte buffer
+		assert!(reader.read_string(10).is_err());
+	}
+}
