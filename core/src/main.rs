@@ -23,7 +23,8 @@
 use anyhow::Result;
 use std::sync::{mpsc, Arc};
 
-use modules::SecurityModule;
+use modules::common::macros::build_registry;
+use modules::common::traits::SecurityModule;
 
 pub mod actor;
 pub mod bpf_manager;
@@ -47,7 +48,7 @@ fn main() -> Result<()> {
 	 * across our asynchronous worker threads, adhering strictly to Rust's
 	 * memory safety guarantees.
 	 */
-	let registry: Vec<Arc<dyn SecurityModule + Send + Sync>> = modules::build_registry();
+	let registry: Vec<Arc<dyn SecurityModule + Send + Sync>> = build_registry();
 	let shared_registry = Arc::new(registry);
 
 	// Initialize Kernel Broker & Load modules into memory

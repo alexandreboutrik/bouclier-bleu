@@ -14,7 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{define_security_module, BpfReader};
+use crate::common::fs_utils::get_secure_hardware_key;
+use crate::common::traits::{BpfReader, MapProvider};
+use crate::define_security_module;
 use libbpf_rs::MapCore;
 
 /// Telemetry payload yielded by the `core_shield` BPF hooks.
@@ -93,7 +95,7 @@ define_security_module!(
 		caps.insert("protected_files".to_string(), 2);
 		caps
 	},
-	init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+	init: |provider: &dyn MapProvider| -> Result<(), String> {
 		let bpf_map = provider.get_map("protected_files")?;
 
 		let target_files = ["/etc/bouclier-bleu/config.toml", "/usr/bin/bouclier-bleu-core"];
@@ -109,7 +111,7 @@ define_security_module!(
 		 * or mapped in user-space.
 		 */
 		for path in target_files {
-			let Ok(key_bytes) = crate::get_secure_hardware_key(path) else { continue; };
+			let Ok(key_bytes) = get_secure_hardware_key(path) else { continue; };
 			if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
 					eprintln!("Bouclier Bleu [WARNING]: Could not protect {}: {}", path, e);
 			}

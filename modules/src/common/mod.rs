@@ -14,17 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Bouclier Bleu Defense Modules
+//! Common Framework for Bouclier Bleu Modules
 //!
-//! This crate contains the specific heuristics and the common framework
-//! required to interface with the core eBPF engine.
+//! This module aggregates shared utilities, architectural traits, telemetry
+//! sinks, and declarative macros used across all security heuristics.
 
-// Declare the common framework (which houses our traits, telemetry, etc.)
-pub mod common;
-
-// Declare the individual heuristic modules
-pub mod exec_block;
-pub mod mount_secure;
-pub mod rename_entropy;
-pub mod shield;
-pub mod strict_wx;
+pub mod fs_utils;
+pub mod macros;
+pub mod telemetry;
+pub mod traits;

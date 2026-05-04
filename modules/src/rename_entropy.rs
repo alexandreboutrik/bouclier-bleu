@@ -14,7 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{define_security_module, BpfReader};
+use crate::common::fs_utils::{build_secure_walker, get_secure_hardware_key};
+use crate::common::traits::{BpfReader, MapProvider};
+use crate::define_security_module;
 use libbpf_rs::MapCore;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -262,7 +264,7 @@ define_security_module!(
 		let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
 
 		for path in target_paths {
-			let walker = crate::build_secure_walker(path).filter_entry(|e| {
+			let walker = build_secure_walker(path).filter_entry(|e| {
 				let fname = e.file_name().to_string_lossy();
 				if !fname.starts_with('.') { return true; }
 				critical_hidden.contains(&fname.as_ref())
@@ -283,7 +285,7 @@ define_security_module!(
 		caps.insert("protected_dirs".to_string(), safe_capacity);
 		caps
 	},
-	init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+	init: |provider: &dyn MapProvider| -> Result<(), String> {
 		let bpf_map = provider.get_map("protected_dirs")?;
 
 		let target_paths = ["/home", "/var", "/etc", "/opt"];
@@ -309,7 +311,7 @@ define_security_module!(
 			// `~/.mozilla`) which generally contain high-churn, benign files
 			// that do not require strict ransomware entropy monitoring.
 			let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
-			let walker = crate::build_secure_walker(path)
+			let walker = build_secure_walker(path)
 				.filter_entry(move |e| {
 					let file_name = e.file_name().to_string_lossy();
 
@@ -326,7 +328,7 @@ define_security_module!(
 				// `new_dir` parameter provided to the LSM hook points to the
 				// destination directory's inode structure, not the individual
 				// file itself.
-				if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
+				if let Ok(key_bytes) = get_secure_hardware_key(entry.path()) {
 					bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
 						.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
 				}

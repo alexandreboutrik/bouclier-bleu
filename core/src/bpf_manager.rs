@@ -21,7 +21,7 @@ use std::fs;
 use std::sync::Arc;
 
 use crate::config::DaemonConfig;
-use modules::SecurityModule;
+use modules::common::traits::{MapProvider, SecurityModule};
 
 #[allow(clippy::all)]
 pub mod bpf_loader {
@@ -39,7 +39,7 @@ pub struct CoreMapProvider<'a> {
 	pub skel: &'a dyn Any,
 }
 
-impl<'a> modules::MapProvider for CoreMapProvider<'a> {
+impl<'a> MapProvider for CoreMapProvider<'a> {
 	fn get_map(&self, name: &str) -> Result<libbpf_rs::Map<'_>, String> {
 		bpf_loader::get_map(self.skel, name).map_err(|e| e.to_string())
 	}

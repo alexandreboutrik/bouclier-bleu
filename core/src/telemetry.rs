@@ -19,7 +19,7 @@ use libbpf_rs::{RingBuffer, RingBufferBuilder};
 use std::sync::Arc;
 
 use crate::bpf_manager::{bpf_loader, BpfEngine};
-use modules::SecurityModule;
+use modules::common::traits::SecurityModule;
 
 // Type aliases
 pub type SharedRegistry = Arc<Vec<Arc<dyn SecurityModule + Send + Sync>>>;

@@ -14,7 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{define_security_module, BpfReader};
+use crate::common::fs_utils::{build_secure_walker, generate_hardware_key};
+use crate::common::traits::{BpfReader, MapProvider};
+use crate::define_security_module;
 use libbpf_rs::MapCore;
 use xattr::FileExt;
 
@@ -69,7 +71,7 @@ define_security_module!(
 		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
 
 		for path in target_paths {
-			for entry in crate::build_secure_walker(path).filter_map(|e| e.ok()) {
+			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
 				if entry.file_type().is_file() {
 					count += 1;
 				}
@@ -84,7 +86,7 @@ define_security_module!(
 		caps.insert("strict_wx_binaries".to_string(), safe_capacity);
 		caps
 	},
-	init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+	init: |provider: &dyn MapProvider| -> Result<(), String> {
 		let bpf_map = provider.get_map("strict_wx_binaries")?;
 
 		// Standard system binary staging directories
@@ -100,7 +102,7 @@ define_security_module!(
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Scanning {} for strict_wx opt-in attributes...", path);
 
-			for entry in crate::build_secure_walker(path).filter_map(|e| e.ok()) {
+			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
 				if entry.file_type().is_file() {
 					/*
 					 * TOCTOU Race Condition Mitigation
@@ -119,7 +121,7 @@ define_security_module!(
 						match file.get_xattr("user.bouclier.strict_wx") {
 							Ok(Some(fd_xattr)) if fd_xattr == b"1" => {
 								if let Ok(metadata) = file.metadata() {
-									let key_bytes = crate::generate_hardware_key(&metadata);
+									let key_bytes = generate_hardware_key(&metadata);
 
 									/*
 									 * Strict Map Exhaustion Handling

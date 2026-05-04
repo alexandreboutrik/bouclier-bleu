@@ -14,9 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// SPDX-License-Identifier: Apache-2.0
-
-use crate::{define_security_module, BpfReader};
+use crate::common::traits::BpfReader;
+use crate::define_security_module;
 
 /// Telemetry payload yielded by the `mount_secure` BPF hook.
 #[derive(Debug, serde::Serialize)]

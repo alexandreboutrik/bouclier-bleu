@@ -14,7 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{define_security_module, BpfReader};
+use crate::common::fs_utils::{build_secure_walker, get_secure_hardware_key};
+use crate::common::traits::{BpfReader, MapProvider};
+use crate::define_security_module;
 use libbpf_rs::MapCore;
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
@@ -83,7 +85,7 @@ define_security_module!(
 
 		for path in target_paths {
 
-			let safe_walker = crate::build_secure_walker(path);
+			let safe_walker = build_secure_walker(path);
 
 			for entry in safe_walker {
 				match entry {
@@ -109,7 +111,7 @@ define_security_module!(
 		caps.insert("protected_dirs".to_string(), safe_capacity);
 		caps
 	},
-	init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+	init: |provider: &dyn MapProvider| -> Result<(), String> {
 		let bpf_map = provider.get_map("protected_dirs")?;
 
 		let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
@@ -127,11 +129,11 @@ define_security_module!(
 		for path in target_paths {
 			println!("Bouclier Bleu [Setup]: Recursively indexing volatile path {}...", path);
 
-			let safe_walker = crate::build_secure_walker(path);
+			let safe_walker = build_secure_walker(path);
 
 			for entry in safe_walker.filter_map(|e| e.ok()) {
 				// System-level Inode Extraction
-				if let Ok(key_bytes) = crate::get_secure_hardware_key(entry.path()) {
+				if let Ok(key_bytes) = get_secure_hardware_key(entry.path()) {
 					bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
 						.map_err(|e| format!("CRITICAL: Map update failed for {}: {}", entry.path().display(), e))?;
 				}

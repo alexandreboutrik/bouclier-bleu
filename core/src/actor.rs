@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use libbpf_rs::RingBuffer;
-use modules::SecurityModule;
+use modules::common::traits::SecurityModule;
 
 use crate::bpf_manager::{bpf_loader, BpfEngine};
 use crate::ipc;
