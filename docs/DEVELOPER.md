@@ -53,7 +53,8 @@ int BPF_PROG(ptrace_monitor_hook, struct task_struct *child, unsigned int mode) 
 Next, we need to expose this module to the Rust EDR daemon so the Control Plane can manage its lifecycle, attach it to the kernel, and toggle its state. Create a new file at `modules/src/ptrace_monitor.rs`.
 
 ```rs
-use crate::{BpfReader, define_security_module};
+use crate::common::traits::BpfReader;
+use crate::define_security_module;
 
 // Define the telemetry payload (if we were using the RingBuffer)
 #[derive(Debug)]
@@ -94,7 +95,7 @@ define_security_module!(
 
 ### Step 3. Registering the Module
 
-Finally, we must inject our new module into the EDR's Inversion of Control (IoC) registry. The core daemon uses this registry to dynamically load the compiled `.skel.rs` files and route IPC commands.
+Finally, we inject our new module into the EDR's Inversion of Control (IoC) registry. The core daemon uses this registry to dynamically load the compiled `.skel.rs` files and route IPC commands.
 
 Open `modules/src/lib.rs` and make the following additions:
 
@@ -106,12 +107,18 @@ pub mod ptrace_monitor; // <-- Add this line
 
 ```
 
+The registry builder logic is inside the `common::macros` module. Open `modules/src/common/macros.rs`, locate the `build_registry()` function, and append your module
+
 ```rs
-// Locate the `build_registry()` function and append your module
+use crate::common::traits::SecurityModule;
+use crate::{exec_block, mount_secure, rename_entropy, shield, strict_wx, ptrace_monitor}; // <- Add ptrace_monitor
+
+use std::sync::Arc;
+
 pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
     vec![
-        Arc::new(exec_block::ExecBlock::new()),
-        Arc::new(rename_entropy::RenameEntropy::new()),
+        Arc::new(shield::Shield::new()),
+        // ...
         Arc::new(ptrace_monitor::PtraceMonitor::new()), // <-- Add this line
     ]
 }
@@ -121,11 +128,9 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 
 In the example above, we used `bpf_printk()`. This is strictly for local kernel debugging. You should never use `bpf_printk` in production, as it is incredibly slow and pollutes the global trace pipe.
 
-To securely send forensic data from the kernel hook back up to the Rust daemon, you must utilize the zero-copy BPF RingBuffer (`alerts` map).
+To securely send forensic data from the kernel hook back up to the Rust daemon, you must utilize the zero-copy BPF RingBuffer. The user-space ingestion pipeline automatically intercepts safe Rust structs and forwards them to the standardized SIEM JSON log via the NDJSON forwarding engine in `common::telemetry`.
 
-For example:
-
-Look at `bpf/rename_entropy.bpf.c`. Notice how it defines a struct `rename_alert`, reserves space using `bpf_ringbuf_reserve()`, populates the data, and fires it off with `bpf_ringbuf_submit()`.
+For example, look at `bpf/rename_entropy.bpf.c`. Notice how it defines a struct `rename_alert`, reserves space using `bpf_ringbuf_reserve()`, populates the data, and fires it off with `bpf_ringbuf_submit()`.
 
 ```c
 struct rename_alert {
@@ -159,6 +164,8 @@ if (event) {
 Then look at `modules/src/rename_entropy.rs`. Notice how it defines a mirroring Rust struct and uses the `BpfReader` utility to safely parse the raw bytes without using `unsafe` blocks or `FFI`.
 
 ```rs
+use crate::common::traits::BpfReader;
+
 #[derive(Debug)]
 pub struct RenameAlert {
     pub pid: u32,
@@ -210,6 +217,8 @@ Here is how the `rename_entropy` module uses it to size the `protected_dirs` map
 > The capacities hook executes strictly before the init hook. Because the Linux Virtual File System (VFS) heavily caches directory entries, scanning the disk in capacities pulls the metadata into RAM, making the second scan inside your init block nearly instantaneous.
 
 ```rs
+use crate::common::traits::MapProvider;
+
 define_security_module!(
     struct: RenameEntropy,
     name: "Ransomware Entropy Monitor",
@@ -240,7 +249,7 @@ define_security_module!(
         
         caps
     },
-    init: |provider: &dyn crate::MapProvider| -> Result<(), String> {
+    init: |provider: &dyn MapProvider| -> Result<(), String> {
         // ... standard init logic to populate the map ...
         Ok(())
     }

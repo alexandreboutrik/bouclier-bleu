@@ -18,11 +18,13 @@ C remains the _lingua franca_ of the Linux kernel, and using it allows us to lev
 
 Also, to facilitate this architecture, our [build pipeline](core/build.rs) dynamically dumps the BTF of the host system into a fresh `vmlinux.h` at compile time via `bpftool`. This guarantees that our BPF objects align perfectly with the host’s memory layout while keeping the repository lightweight. Through `libbpf-rs`, we generate strongly typed Rust "skeletons" at compile time, seamlessly bridging the safety of user-space Rust with the rock-solid stability of kernel-space C.
 
-## Zero-Copy Telemetry (BPF RingBuffer)
+## Zero-Copy Telemetry (BPF RingBuffer) and NDJSON Forwarding
 
 When a BPF hook detects anomalous behavior (e.g. a high-entropy file rename), it needs to pass that context back to user-space for logging or SIEM integration.
 
 We utilize a BPF RingBuffer (_alerts map_, see [the definition](bpf/headers/module_core.h)) rather than the older perf buffer. The RingBuffer provides a shared, memory-mapped region between the kernel and user-space, allowing for high-throughput, zero-copy telemetry transfer.
+
+Once safely parsed, the payload enters the NDJSON Forwarding Engine. This engine automatically wraps the safe Rust structs in a standardized envelope (see [the definition](modules/src/common/telemetry.rs)) and writes them directly to `/var/log/bouclier-bleu/alerts.json`. This structured, flattened log file can then be effortlessly ingested by Splunk, Elasticsearch, or any other SIEM platform for real-time monitoring
 
 A common vulnerability in Rust/C integrations is using `unsafe` blocks and `C-FFI` to cast raw byte pointers into Rust structs. `Bouclier Bleu` DO NOT accept `unsafe` or `FFI` code. We implemented a custom BpfReader utility that safely extracts fields from the raw byte slice. By utilizing `from_utf8_lossy()` and explicit bounds checking, we prevent buffer underruns, out-of-bounds access, and panics caused by malformed or truncated kernel strings.
 
