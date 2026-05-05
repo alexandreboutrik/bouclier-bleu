@@ -64,6 +64,19 @@ define_security_module!(
 	struct: ExecBlock,
 	name: "Untrusted Path Execution Prevention",
 	slug: "exec_block",
+	/*
+	 * T1105 - Ingress Tool Transfer
+	 * Attackers can download secondary payloads (droppers, web shells,
+	 * post-exploitation frameworks) into world-writable staging directories
+	 * like /tmp, /var/tmp, or /dev/shm before executing them. The module
+	 * blocks this execution pathway.
+	 *
+	 * T1620 - Reflective Code Loading
+	 * The module eBPF checks against i_nlink == 0 and F_SEAL_WRITE on
+	 * shmem_inode_info are neutralizing fileless malware execution via
+	 * memfd_create and O_TMPFILE.
+	 */
+	mitre: ["T1105", "T1620"],
 	parser: ExecAlert::try_from_bytes,
 	handler: |alert: ExecAlert| {
 		println!(
@@ -118,7 +131,7 @@ define_security_module!(
 		let is_protected: [u8; 1] = [1];
 
 		/*
-		 * HARDWARE-BACKED DIRECTORY WATCHLIST INITIALIZATION
+		 * Hardware-backed Directory Watchlist Initialization
 		 * Threat Model: Advanced adversaries routinely use mount namespaces
 		 * (`unshare -m`) or bind-mounts to obfuscate paths and bypass
 		 * string-matching security heuristics. To neutralize this, the

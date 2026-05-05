@@ -60,6 +60,7 @@ mod tests {
 		struct: DummyHeuristic,
 		name: "Dummy Heuristic Engine",
 		slug: "dummy_heur",
+		mitre: [],
 		parser: dummy_parser,
 		handler: |_alert: DummyAlert| {
 			// Localized logic block (No-op for test)

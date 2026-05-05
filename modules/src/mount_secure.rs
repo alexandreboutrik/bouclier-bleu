@@ -66,6 +66,19 @@ define_security_module!(
 	struct: MountSecure,
 	name: "Removable Media Neutralizer",
 	slug: "mount_secure",
+	/*
+	 * T1200 - Hardware Additions
+	 * Intercepting mounts from /dev/sd* and /dev/mmcblk*.
+	 *
+	 * T1548.001 - Abuse Elevation Control Mechanism: Setuid and Setgid
+	 * Enforcing the MS_NOSUID / MNT_NOSUID flags to block privilege escalation
+	 * via pre-compiled binaries on the USB.
+	 *
+	 * T1204.002 - User Execution: Malicious File
+	 * Enforcing MS_NOEXEC / MNT_NOEXEC to prevent payload execution from the
+	 * mounted device.
+	 */
+	mitre: ["T1200", "T1548.001", "T1204.002"],
 	parser: MountAlert::try_from_bytes,
 	handler: |alert: MountAlert| {
 		println!(

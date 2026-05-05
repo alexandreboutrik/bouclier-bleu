@@ -45,6 +45,7 @@ macro_rules! define_security_module {
         struct: $struct_name:ident,
         name: $name:expr,
         slug: $slug:expr,
+        mitre: [$($mitre_tags:expr),*],
         parser: $parser:path,
         handler: $handler:expr
         $(, capacities: $capacities_closure:expr)?
@@ -121,7 +122,7 @@ macro_rules! define_security_module {
                          * This guarantees zero-code integration for all
                          * modules.
                          */
-                        $crate::common::telemetry::emit_siem_event($slug, &alert);
+                        $crate::common::telemetry::emit_siem_event($slug, &[$($mitre_tags),*], &alert);
 
                         // Pass the validated payload to the localized logic
                         // block

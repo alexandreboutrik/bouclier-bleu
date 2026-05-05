@@ -83,6 +83,7 @@ define_security_module!(
     struct: PtraceMonitor,
     name: "Ptrace Injection Monitor",
     slug: "ptrace_monitor",
+    mitre: [], // add here MITRE ATT&CK, e.g. ["TA0002"]
     parser: PtraceAlert::try_from_bytes,
     handler: |alert: PtraceAlert| {
         println!(

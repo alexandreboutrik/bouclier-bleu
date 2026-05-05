@@ -37,6 +37,7 @@ struct EnvelopedAlert<'a, A: serde::Serialize> {
 	#[serde(rename = "@timestamp")]
 	timestamp_ms: u128,
 	event_source: &'a str,
+	mitre_techniques: &'static [&'static str],
 	#[serde(flatten)]
 	payload: &'a A,
 }
@@ -160,7 +161,11 @@ fn open_strict_file(log_dir: &str) -> Option<File> {
 /// Wraps the module-specific struct in a standardized envelope containing
 /// SIEM-critical metadata (ISO-like timestamps, source identifiers) and
 /// flushes it to disk.
-pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
+pub fn emit_siem_event<T: serde::Serialize>(
+	module_slug: &str,
+	mitre_techniques: &'static [&'static str],
+	alert: &T,
+) {
 	let file_mutex = SIEM_LOG_SINK.get_or_init(|| {
 		let log_dir = "/var/log/bouclier-bleu";
 
@@ -183,6 +188,7 @@ pub fn emit_siem_event<T: serde::Serialize>(module_slug: &str, alert: &T) {
 	let envelope = EnvelopedAlert {
 		timestamp_ms,
 		event_source: module_slug,
+		mitre_techniques,
 		payload: alert,
 	};
 

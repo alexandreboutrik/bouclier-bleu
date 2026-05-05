@@ -168,6 +168,14 @@ define_security_module!(
 	struct: RenameEntropy,
 	name: "Ransomware Rename Entropy Monitor",
 	slug: "rename_entropy",
+	/*
+	 * T1486 - Data Encrypted for Impact
+	 * Definition of ransomware. By evaluating the Shannon entropy of renamed
+	 * files to detect high-randomness extensions and immediately issuing a
+	 * SIGKILL to the process tree, the module mitigates the core impact phase
+	 * of a ransomware lifecycle.
+	 */
+	mitre: ["T1486"],
 	parser: RenameAlert::try_from_bytes,
 	handler: |alert: RenameAlert| {
 		let mut tracker = match get_tracker().lock() {

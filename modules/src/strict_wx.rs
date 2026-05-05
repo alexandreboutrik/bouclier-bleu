@@ -59,6 +59,19 @@ define_security_module!(
 	struct: StrictWx,
 	name: "Strict Write XOR Execute (W^X)",
 	slug: "strict_wx",
+	/*
+	 * T1055 - Process Injection
+	 * Preventing memory allocations from requesting PROT_WRITE | PROT_EXEC
+	 * (and blocking sequential transitions) neutralizes almost all forms of
+	 * shellcode injection, hollow process injection, and dynamic payload
+	 * execution.
+	 *
+	 * T1620 - Reflective Code Loading
+	 * W^X enforcement also severely limits an attacker's ability to map
+	 * malicious shared libraries (.so) into memory dynamically without
+	 * touching the disk.
+	 */
+	mitre: ["T1055", "T1620"],
 	parser: StrictWxAlert::try_from_bytes,
 	handler: |alert: StrictWxAlert| {
 		println!(
