@@ -147,9 +147,9 @@ function get_color_code() {
 		} else if (m == "cyclo") {
 			if (v <= 15) color=GREEN; else if (v <= 30) color=YELLOW; else if (v <= 50) color=ORANGE; else color=RED;
 		} else if (m == "cog") {
-			if (v <= 5) color=GREEN; else if (v <= 15) color=YELLOW; else if (v <= 30) color=ORANGE; else color=RED;
+			if (v <= 10) color=GREEN; else if (v <= 20) color=YELLOW; else if (v <= 35) color=ORANGE; else color=RED;
 		} else if (m == "mi") {
-			if (v >= 60) color=GREEN; else if (v >= 40) color=YELLOW; else if (v >= 20) color=ORANGE; else color=RED;
+			if (v >= 35) color=GREEN; else if (v >= 25) color=YELLOW; else if (v >= 15) color=ORANGE; else color=RED;
 		} else if (m == "vol") {
 			if (v < 3000) color=GREEN; else if (v < 6000) color=YELLOW; else if (v < 10000) color=ORANGE; else color=RED;
 		} else if (m == "abc") {
