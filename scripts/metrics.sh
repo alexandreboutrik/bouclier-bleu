@@ -135,6 +135,12 @@ function gather_static_metrics() {
 	if [ -d "${MODULES_DIR}" ]; then
 		DETECTORS_COUNT=$(find "${MODULES_DIR}" -maxdepth 1 -type f -name '*.rs' ! -name 'lib.rs' | wc -l | tr -d ' ')
 		echo "  [+] Found ${DETECTORS_COUNT} Detectors/Modules."
+
+		# 2.2. MITRE ATT&CKs covered
+		UNIQUE_MITRE_COUNT=$(find "${MODULES_DIR}" -maxdepth 1 -type f -name "*.rs" -exec grep -h -oP 'mitre:\s*\[\K[^\]]*' {} + |
+			grep -oP '"\K[^"]+(?=")' | sort -u | wc -l)
+
+		echo "  [+] Found ${UNIQUE_MITRE_COUNT} MITRE ATT&CK techniques covered."
 	else
 		echo "  [-] Modules directory not found at ${MODULES_DIR}"
 	fi
@@ -317,6 +323,7 @@ function print_report() {
 	echo -e "\033[1;34m==================================================\033[0m"
 	echo -e "  \033[1;32meBPF Hooks\033[0m        : ${HOOKS_COUNT}"
 	echo -e "  \033[1;36mDetectors\033[0m         : ${DETECTORS_COUNT}"
+	echo -e "  \033[1;38;5;208mMITRE Coverage\033[0m    : ${UNIQUE_MITRE_COUNT}"
 	echo -e "  \033[1;35mTests\033[0m             : ${TESTS_COUNT}${TESTS_DETAILS}"
 	echo -e "\033[1;34m--------------------------------------------------\033[0m"
 	echo -e "  \033[1;33mUserland Mem\033[0m      : ${USER_MEM}"
