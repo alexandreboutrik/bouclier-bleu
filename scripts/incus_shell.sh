@@ -154,22 +154,38 @@ function setup_and_launch() {
 function enable_bpf_lsm() {
 	echo -e "\n[*] Enforcing BPF LSM boot parameters..."
 
-	# Check if BPF is already in the GRUB config to avoid unnecessary reboots
-	if ! incus exec "${VM_NAME}" -- grep -q "bpf" /etc/default/grub 2>/dev/null; then
-		incus exec "${VM_NAME}" -- bash -c "
-			sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"lsm=landlock,lockdown,yama,integrity,apparmor,bpf /' /etc/default/grub
-			
-			# Distro-agnostic GRUB update
-			if command -v update-grub >/dev/null 2>&1; then
+	# Check for BPF in grub default, grub.d drops, or current kernel cmdline
+	if ! incus exec "${VM_NAME}" -- grep -q -E "bpf" /etc/default/grub /etc/default/grub.d/*.cfg 2>/dev/null; then
+		incus exec "${VM_NAME}" -- bash -c '
+			export PATH="$PATH:/usr/sbin:/sbin"
+
+			if command -v grubby >/dev/null 2>&1; then
+				# Fedora / RHEL Family
+				grubby --update-kernel=ALL --args="lsm=bpf"
+			elif command -v update-grub >/dev/null 2>&1; then
+				# Ubuntu / Debian Family
+				mkdir -p /etc/default/grub.d
+				echo "GRUB_CMDLINE_LINUX_DEFAULT=\"\${GRUB_CMDLINE_LINUX_DEFAULT} lsm=bpf\"" > /etc/default/grub.d/99-bpf-lsm.cfg
 				update-grub
-			elif command -v grub2-mkconfig >/dev/null 2>&1; then
-				grub2-mkconfig -o /boot/grub2/grub.cfg
+			else
+				echo "Error: Neither grubby nor update-grub found. Cannot configure LSM." >&2
+				exit 1
 			fi
-		"
+
+			# Mask network-wait and cloud services to prevent airgap boot/shutdown hangs
+			systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service cloud-init.service cloud-config.service cloud-final.service cloud-init-local.service
+		'
 		echo "[*] Rebooting VM to apply new kernel parameters..."
 		incus restart "${VM_NAME}"
 
 		sleep 5
+
+		# 1. Wait for the guest agent to come back online
+		while ! incus exec "${VM_NAME}" -- echo "ready" >/dev/null 2>&1; do
+			sleep 2
+		done
+
+		# 2. Because we masked wait-online, give the network a moment to spin up asynchronously
 		while ! incus exec "${VM_NAME}" -- ping -c 1 8.8.8.8 >/dev/null 2>&1; do
 			sleep 2
 		done
