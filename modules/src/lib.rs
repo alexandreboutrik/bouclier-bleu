@@ -25,6 +25,7 @@ pub mod common;
 // Declare the individual heuristic modules
 pub mod exec_block;
 pub mod mount_secure;
+pub mod ptrace_block;
 pub mod rename_entropy;
 pub mod shield;
 pub mod strict_wx;
