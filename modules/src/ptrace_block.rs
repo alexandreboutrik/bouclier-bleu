@@ -55,7 +55,10 @@ impl PtraceAlert {
 		let pid = reader.read_u32()?;
 		let target_pid = reader.read_u32()?;
 		let action_type = reader.read_u32()?;
-		let target_comm = reader.read_string(16)?;
+		// The kernel pads strings with null bytes. We must trim these to
+		// ensure clean downstream telemetry logging and string matching.
+		let raw_comm = reader.read_string(16)?;
+		let target_comm = raw_comm.trim_matches('\0').to_string();
 
 		Ok(Self {
 			pid,
@@ -65,6 +68,10 @@ impl PtraceAlert {
 		})
 	}
 }
+
+// Telemetry action identifiers bridging the kernel BPF definitions.
+const ACTION_CRED_DUMP: u32 = 1;
+const ACTION_INJECTION: u32 = 2;
 
 /*
  * Defense Heuristic : Process Injection & Credential Dumping Prevention
@@ -93,8 +100,8 @@ define_security_module!(
 	parser: PtraceAlert::try_from_bytes,
 	handler: |alert: PtraceAlert| {
 		let action_str = match alert.action_type {
-			1 => "CREDENTIAL_DUMP",
-			2 => "PROCESS_INJECTION",
+			ACTION_CRED_DUMP => "CREDENTIAL_DUMP",
+			ACTION_INJECTION => "PROCESS_INJECTION",
 			_ => "UNKNOWN_VIOLATION",
 		};
 
@@ -138,19 +145,32 @@ define_security_module!(
 		 * tracking mechanism that the kernel hook can validate regardless of
 		 * how the file is mapped in user-space memory.
 		 */
-		for path in target_binaries {
-			let Ok(key_bytes) = get_secure_hardware_key(path) else {
-				// Silently skip if the binary isn't installed on this specific
-				// OS
-				continue;
-			};
+		let mut protection_count = 0;
 
-			if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
-				eprintln!("Bouclier Bleu [WARNING]: Could not protect credential process {}: {}", path, e);
-			} else {
-				println!("Bouclier Bleu [Setup]: Anti-dumping memory protection activated for {}", path);
+		for path in target_binaries {
+			match get_secure_hardware_key(path) {
+				Ok(key_bytes) => {
+					if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
+						eprintln!("Bouclier Bleu [WARNING]: Could not protect credential process {}: {}", path, e);
+					} else {
+						println!("Bouclier Bleu [Setup]: Anti-dumping memory protection activated for {}", path);
+						protection_count += 1;
+					}
+				}
+				Err(_) => {
+					// Silently skip if the binary isn't installed on this
+					// specific OS, but we will validate the total count at the
+					// end.
+					continue;
+				}
 			}
 		}
+
+		if protection_count == 0 {
+			eprintln!("Bouclier Bleu [CRITICAL]: No credential processes could be protected!");
+			return Err("Credential protection initialization failed: Watchlist empty".to_string());
+		}
+
 		Ok(())
 	}
 );

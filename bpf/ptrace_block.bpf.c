@@ -108,8 +108,12 @@ static __always_inline void dispatch_ptrace_alert(__u32 tracer_tgid,
 	 * bpf_probe_read_kernel_str to safely extract the victim's process name
 	 * for the EDR telemetry without risking page faults.
 	 */
-	bpf_probe_read_kernel_str(event->target_comm, sizeof(event->target_comm),
-							  BPF_CORE_READ(child, comm));
+	if (bpf_probe_read_kernel_str(event->target_comm,
+								  sizeof(event->target_comm),
+								  BPF_CORE_READ(child, comm)) < 0) {
+		char unknown_str[] = "<unknown>";
+		__builtin_memcpy(event->target_comm, unknown_str, sizeof(unknown_str));
+	}
 
 	bpf_ringbuf_submit(event, 0);
 }
@@ -147,11 +151,12 @@ int BPF_PROG(ptrace_block_access_check, struct task_struct *child,
 
 	/*
 	 * Heuristic 1: Credential Dumping Protection (Hardware-Backed)
-	 * Attackers often attempt to read the memory (`PTRACE_MODE_READ`) of
-	 * password managers or SSH agents. We extract the physical hardware ID of
-	 * the binary currently executing inside the victim process. If it matches
-	 * our protected map, we block the access completely. This applies even if
-	 * the attacker is root, serving as a robust anti-tamper layer.
+	 * Attackers often attempt to read the memory (`PTRACE_MODE_READ`) or
+	 * attach (`PTRACE_MODE_ATTACH`) to password managers or SSH agents. We
+	 * extract the physical hardware ID of the binary currently executing
+	 * inside the victim process. If it matches our protected map, we block ALL
+	 * access completely. This applies even if the attacker is root, serving as
+	 * a robust anti-tamper layer against all ptrace modes.
 	 */
 	struct file *child_exe = BPF_CORE_READ(child, mm, exe_file);
 	if (child_exe) {
@@ -162,7 +167,7 @@ int BPF_PROG(ptrace_block_access_check, struct task_struct *child,
 
 			__u8 *is_protected =
 				bpf_map_lookup_elem(&protected_processes, &target_id);
-			if (is_protected && *is_protected == 1 && tracer_uid != 0) {
+			if (is_protected && *is_protected == 1) {
 				is_violation = true;
 				triggered_action = ACTION_CRED_DUMP;
 			}
@@ -186,14 +191,6 @@ int BPF_PROG(ptrace_block_access_check, struct task_struct *child,
 	/* Enforcement & Telemetry */
 	if (is_violation) {
 		dispatch_ptrace_alert(tracer_tgid, child, triggered_action);
-
-		if (triggered_action == ACTION_CRED_DUMP) {
-			bpf_printk("Bouclier Bleu [BLOCK]: Credential dumping via ptrace "
-					   "prevented.\n");
-		} else {
-			bpf_printk("Bouclier Bleu [BLOCK]: Unprivileged cross-process "
-					   "injection prevented.\n");
-		}
 
 		return -EACCES;
 	}
@@ -219,6 +216,12 @@ int BPF_PROG(ptrace_block_traceme, struct task_struct *parent) {
 	/*
 	 * In a PTRACE_TRACEME scenario, the currently executing task is the child,
 	 * inherently asking the kernel to allow the 'parent' to trace it.
+	 *
+	 * Extract the global UID of the parent safely via CO-RE.
+	 * Inside the kernel, `cred->uid` is stored as a `kuid_t` (Kernel UID),
+	 * which represents the true, global namespace-independent UID.
+	 * Reading `uid.val` natively prevents attackers from bypassing the check
+	 * by creating a localized user namespace where they map to UID 0.
 	 */
 	struct task_struct *child = bpf_get_current_task_btf();
 	__u32 parent_uid = BPF_CORE_READ(parent, cred, uid.val);
@@ -232,8 +235,6 @@ int BPF_PROG(ptrace_block_traceme, struct task_struct *parent) {
 	if (parent_uid != 0) {
 		dispatch_ptrace_alert(BPF_CORE_READ(parent, tgid), child,
 							  ACTION_INJECTION);
-		bpf_printk("Bouclier Bleu [BLOCK]: Hollow process injection "
-				   "(PTRACE_TRACEME) prevented.\n");
 		return -EACCES;
 	}
 
