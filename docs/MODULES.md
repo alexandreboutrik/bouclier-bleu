@@ -12,15 +12,16 @@ Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as li
 > [!IMPORTANT]
 > Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-| Component / Module | Memory Consumption (kB) |
+| Component / Module | Memory Consumption |
 | :--- | :--- |
-| **User-Space Daemon (VmRSS)** | 6636.00 |
-| **`rename_entropy` (eBPF Maps)** | 2602.24 |
-| **`exec_block` (eBPF Maps)** | 1008.31 |
-| **`strict_wx` (eBPF Maps)** | 448.45 |
-| **`shield` (eBPF Maps)** | 305.16 |
-| **`mount_secure` (eBPF Maps)** | 302.61 |
-| **Total Active Footprint** | **~11.30 MB** |
+| **User-Space Daemon (VmRSS)** | 7856 kB |
+| **`rename_entropy` (eBPF Maps)** | 1555 kB  |
+| **`exec_block` (eBPF Maps)** | 1007 kB |
+| **`strict_wx` (eBPF Maps)** | 447 kB |
+| **`shield` (eBPF Maps)** | 304 kB |
+| **`mount_secure` (eBPF Maps)** | 302 kB |
+| **`ptrace_block` (eBPF Maps)** | 293 kB |
+| **Total Active Footprint** | **~11.77 MB** |
 
 ---
 
@@ -79,13 +80,23 @@ This module stops shellcode injection and in-memory staging by enforcing a simpl
 
 * **How it works:** System administrators can tag compiled binaries with the `user.bouclier.strict_wx` extended attribute. The module tracks these via a hardware-backed map. The module then blocks any memory allocations requesting `PROT_WRITE | PROT_EXEC`. It also blocks sequential bypasses, like trying to make a writable page executable after the fact. This strict protection automatically applies to any `.so` shared libraries mapped into the protected binary's memory.
 
+### Process Injection & Credential Dumping Prevention (`ptrace_block`)
+
+Hardens the Linux `ptrace` capability boundary. It restricts unprivileged processes from attaching to foreign processes to execute hollow process injection and enforces a strict, hardware-backed ring-fence around critical system daemons to prevent memory scraping.
+
+* **eBPF Hooks:** `lsm/ptrace_access_check`, `lsm/ptrace_traceme`.
+
+* **Credential Dumping Prevention:** Attackers often attempt to read the memory (`PTRACE_MODE_READ`) of password managers or authentication daemons (e.g., `sshd`, `sudo`, `gnome-keyring-daemon`). This module resolves the physical `inode` and device ID of these critical binaries at boot to create an immutable watchlist.
+
+* **Process Injection Mitigator:** By evaluating the true global UID (`get_global_uid()`), the module bypasses container or namespace mappings where a local process might falsely appear as root. Unprivileged cross-process attachment (`PTRACE_MODE_ATTACH`) is universally blocked.
+
+* **Hollow Process Prevention:** Process hollowing relies heavily on the `PTRACE_TRACEME` call. The `lsm/ptrace_traceme` hook isolates and prevents unprivileged parent processes from authorizing trace actions on their children, neutralizing dynamic shellcode staging.
+
 ---
 
 ## Upcoming Modules
 
 `Bouclier Bleu` is in active development. The following heuristics are planned for near-term releases:
-
-* **Process Injection Prevention (`ptrace_access_check` / `ptrace_traceme`):** Monitoring and restricting `ptrace` capabilities to block cross-process memory tampering, hollow process injection, and credential dumping.
 
 * **Userfaultfd Confinement (`uffd_restrict`)** : Mitigates advanced heap-grooming and Use-After-Free (UAF) exploits. It severely restricts user-space page fault handling by globally denying access to `userfaultfd`, explicitly whitelisting only architecturally necessary processes (like QEMU/KVM).
 

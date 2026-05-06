@@ -33,3 +33,6 @@ mount_secure = true
 
 # Strict Write XOR Execute (W^X) (Prevents in-memory shellcode staging)
 # strict_wx = false
+
+# Process Injection & Credential Dumping Prevention (Restricts ptrace attach and memory scraping)
+# ptrace_block = false
