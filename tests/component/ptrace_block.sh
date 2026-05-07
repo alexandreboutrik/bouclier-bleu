@@ -24,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
 # ==========================================
 # CONFIGURATION
 # ==========================================
-: "${PTRACE_TESTER:="/tmp/bb_ptrace_tester"}"
+: "${PTRACE_TESTER:="/opt/bb_ptrace_tester"}"
 : "${TEST_USER:="bb_ptrace_user"}"
 
 # ==========================================
@@ -33,7 +33,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
 
 function teardown() {
 	cleanup_daemon 2>/dev/null || true
-	rm -f "${PTRACE_TESTER}" "/tmp/bb_test_"* "/tmp/bb_test"*eval.log "${DAEMON_LOG}" /tmp/bb_su_test.pid
+	# Clean up the binaries from /opt/ and the logs from /tmp/
+	rm -f "${PTRACE_TESTER}" "/opt/bb_test_"* "/tmp/bb_test"*eval.log "${DAEMON_LOG}" /tmp/bb_su_test.pid
 	userdel -r "${TEST_USER}" 2>/dev/null || true
 	pkill -u "${TEST_USER}" 2>/dev/null || true
 }
@@ -122,10 +123,10 @@ EOF
 	rm -f "${tester_c}"
 
 	# Isolate execution context by generating uniquely named binaries.
-	cp "${PTRACE_TESTER}" "/tmp/bb_test_inj"
-	cp "${PTRACE_TESTER}" "/tmp/bb_test_hol"
-	cp "${PTRACE_TESTER}" "/tmp/bb_test_root"
-	cp "${PTRACE_TESTER}" "/tmp/bb_test_dis"
+	cp "${PTRACE_TESTER}" "/opt/bb_test_inj"
+	cp "${PTRACE_TESTER}" "/opt/bb_test_hol"
+	cp "${PTRACE_TESTER}" "/opt/bb_test_root"
+	cp "${PTRACE_TESTER}" "/opt/bb_test_dis"
 }
 
 function verify_cred_dump_protection() {
@@ -171,7 +172,7 @@ function verify_unprivileged_injection() {
 	local baseline
 	baseline=$(wc -l <"${DAEMON_LOG}" 2>/dev/null || echo 0)
 
-	su - "${TEST_USER}" -c "/tmp/bb_test_inj attach_child" >/dev/null 2>&1
+	su - "${TEST_USER}" -c "/opt/bb_test_inj attach_child" >/dev/null 2>&1
 
 	local passed=0
 	for _ in {1..20}; do
@@ -196,7 +197,7 @@ function verify_unprivileged_traceme() {
 	local baseline
 	baseline=$(wc -l <"${DAEMON_LOG}" 2>/dev/null || echo 0)
 
-	su - "${TEST_USER}" -c "/tmp/bb_test_hol traceme" >/dev/null 2>&1
+	su - "${TEST_USER}" -c "/opt/bb_test_hol traceme" >/dev/null 2>&1
 
 	local passed=0
 	for _ in {1..20}; do
@@ -231,7 +232,7 @@ function verify_privileged_attach_allowed() {
 
 	echo >/sys/kernel/debug/tracing/trace 2>/dev/null || true
 
-	"/tmp/bb_test_root" attach_child >/dev/null 2>&1
+	"/opt/bb_test_root" attach_child >/dev/null 2>&1
 
 	# Allow a brief moment to ensure no false-positive violation events process
 	sleep 2
@@ -260,7 +261,7 @@ function verify_ipc_detachment() {
 	local baseline
 	baseline=$(wc -l <"${DAEMON_LOG}" 2>/dev/null || echo 0)
 
-	su - "${TEST_USER}" -c "/tmp/bb_test_dis attach_child" >/dev/null 2>&1
+	su - "${TEST_USER}" -c "/opt/bb_test_dis attach_child" >/dev/null 2>&1
 
 	sleep 2
 
