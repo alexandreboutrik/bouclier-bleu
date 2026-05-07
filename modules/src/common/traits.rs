@@ -73,18 +73,35 @@ impl<'a> BpfReader<'a> {
 		let raw_string = String::from_utf8_lossy(&path_buffer[0..null_index]).into_owned();
 		self.offset += max_len;
 
-		// Automatically sanitize all kernel strings to prevent log injection
-		// system-wide
-		let sanitized = raw_string.replace(|c: char| !c.is_ascii_graphic() && c != ' ', "?");
+		/*
+		 * Telemetry Sanitization & Log Injection Prevention
+		 * We map over the string character-by-character to strictly enforce
+		 * printable ASCII. We explicitly track the substitution count during
+		 * iteration, because replacing a 1-byte control character with a
+		 * 1-byte '?' leaves the total byte-length unchanged, which would
+		 * bypass a simple `len() != len()` comparison.
+		 */
+		let mut replaced_count = 0;
+		let sanitized: String = raw_string
+			.chars()
+			.map(|c| {
+				if !c.is_ascii_graphic() && c != ' ' {
+					replaced_count += 1;
+					'?'
+				} else {
+					c
+				}
+			})
+			.collect();
 
 		// Forensic Preservation Heuristic
 		// If non-printable characters were stripped, we alert the SIEM stream
 		// so operators know the original filename was mangled (e.g. evasive
 		// malware).
-		if sanitized.len() != raw_string.len() {
+		if replaced_count > 0 {
 			eprintln!(
 				"Bouclier Bleu [Warning]: Sanitized {} non-printable chars from kernel string",
-				raw_string.len() - sanitized.len()
+				replaced_count
 			);
 		}
 
