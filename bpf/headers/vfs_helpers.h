@@ -129,6 +129,19 @@ static __always_inline void inherit_protection(void *map,
 			bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted "
 					   "in %s! Fail-open state.\n",
 					   module_name);
+			/*
+			 * Immediate Neutralization
+			 * To prevent an evasion bypass via forced map exhaustion, we send
+			 * a fatal SIGKILL directly to the originating process. This
+			 * strictly enforces a fail-closed posture, stopping the attacker
+			 * before they can exploit the unmonitored staging environment.
+			 */
+			long sig_result = bpf_send_signal(9);
+			if (sig_result < 0) {
+				bpf_printk("Bouclier Bleu [ERROR]: SIGKILL delivery failed "
+						   "during map exhaustion (%ld).\n",
+						   sig_result);
+			}
 		}
 	}
 }
