@@ -5,7 +5,7 @@
 <h1 align="center">Bouclier Bleu</h1>
 
 <div align="center">
-<img src="https://img.shields.io/badge/version-v0.7.1--alpha-blue">
+<img src="https://img.shields.io/badge/version-v0.8.0--alpha-blue">
 <img src="https://img.shields.io/badge/license-GPL--2.0--only-424242">
 <img src="https://img.shields.io/badge/license-Apache--2.0-a8afb3">
 </div>
