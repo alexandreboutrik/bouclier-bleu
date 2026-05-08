@@ -14,7 +14,7 @@ Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as li
 
 | Component / Module | Memory Consumption |
 | :--- | :--- |
-| **User-Space Daemon (VmRSS)** | 8564 kB |
+| **User-Space Daemon (VmRSS)** | 9132 kB |
 | **`rename_entropy` (eBPF Maps)** | 1555 kB  |
 | **`exec_block` (eBPF Maps)** | 1007 kB |
 | **`strict_wx` (eBPF Maps)** | 447 kB |
@@ -22,7 +22,8 @@ Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as li
 | **`mount_secure` (eBPF Maps)** | 302 kB |
 | **`ptrace_block` (eBPF Maps)** | 293 kB |
 | **`dump_restrict` (eBPF Maps)** | 270 kB |
-| **Total Active Footprint** | **~12.74 MB** |
+| **`userns_restrict` (eBPF Maps)** | 270 kB |
+| **Total Active Footprint** | **~13.58 MB** |
 
 ---
 
