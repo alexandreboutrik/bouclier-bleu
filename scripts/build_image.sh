@@ -57,7 +57,7 @@ while [ $# -ne 0 ]; do
 			TARGET_OS="${2}"
 			shift
 		else
-			echo "Error: -os requires an argument (ubuntu or fedora)."
+			echo "Error: -os requires an argument ('ubuntu', 'fedora' or 'arch')."
 			BB_HELP=1
 		fi
 		;;
@@ -87,7 +87,7 @@ function print_help() {
 	if [ "${BB_HELP}" != "1" ]; then return; fi
 
 	echo "USAGE:"
-	echo "  ./scripts/build_image.sh -os <ubuntu|fedora> [-out <image_alias>]"
+	echo "  ./scripts/build_image.sh -os <ubuntu|fedora|arch> [-out <image_alias>]"
 	echo
 	echo "DESCRIPTION:"
 	echo "  Provisions and exports a base testing VM image for Bouclier Bleu."
@@ -95,7 +95,7 @@ function print_help() {
 	echo "  and Rust toolchains pre-installed."
 	echo
 	echo "OPTIONS:"
-	echo "  -os                     Required. Target OS distribution ('ubuntu' or 'fedora')."
+	echo "  -os                     Required. Target OS distribution ('ubuntu', 'fedora' or 'arch')."
 	echo "  -out                    Optional. Output alias for the generated tarball."
 	echo "                          Defaults to 'bouclier-bleu-test-base'."
 	echo "  -help, -h               Display this help message and exit."
@@ -114,8 +114,8 @@ function init_env() {
 		exit 1
 	fi
 
-	if [[ "${TARGET_OS}" != "ubuntu" ]] && [[ "${TARGET_OS}" != "fedora" ]]; then
-		echo "Error: Unsupported OS '${TARGET_OS}'. Please use 'ubuntu' or 'fedora'."
+	if [[ "${TARGET_OS}" != "ubuntu" ]] && [[ "${TARGET_OS}" != "fedora" ]] && [[ "${TARGET_OS}" != "arch" ]]; then
+		echo "Error: Unsupported OS '${TARGET_OS}'."
 		exit 1
 	fi
 
@@ -165,6 +165,9 @@ function provision_environment() {
 	elif [[ "${TARGET_OS}" == "fedora" ]]; then
 		incus_image="images:fedora/${FEDORA_VERSION}/cloud"
 		setup_cmds="dnf install -y @development-tools clang llvm pkgconf-pkg-config curl bpftool elfutils-libelf-devel zlib-devel attr grubby"
+	elif [[ "${TARGET_OS}" == "arch" ]]; then
+		incus_image="images:archlinux/current/cloud"
+		setup_cmds="pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm reflector && reflector --latest 10 --protocol https --sort rate --save /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm base-devel clang llvm pkgconf curl bpf libelf zlib attr"
 	fi
 
 	# Added -d root,size=20GiB to ensure DNF and Rustup have enough extraction space

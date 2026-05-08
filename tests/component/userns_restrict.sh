@@ -93,7 +93,10 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(argv[1], "nested_mount_dev") == 0) {
         // Enter nested user and mount namespace
-        if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) return 1;
+        if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) {
+			if (errno == EPERM) return 126;
+			return 1;
+		}
 
         // Attempt to dynamically provision a physical device block (devtmpfs)
         int ret = mount("none", "/tmp", "devtmpfs", 0, NULL);

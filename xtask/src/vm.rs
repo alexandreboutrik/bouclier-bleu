@@ -324,8 +324,23 @@ fn inject_kernel_parameters() -> TaskResult<()> {
         mkdir -p /etc/default/grub.d
         echo 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} lsm=bpf"' > /etc/default/grub.d/99-bpf-lsm.cfg
         update-grub
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+        # Arch Linux / Generic GRUB
+        if grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub; then
+            sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="lsm=bpf /' /etc/default/grub
+        else
+            echo 'GRUB_CMDLINE_LINUX_DEFAULT="lsm=bpf"' >> /etc/default/grub
+        fi
+        grub-mkconfig -o /boot/grub/grub.cfg
+    elif [ -d "/boot/loader/entries" ]; then
+        # Systemd-boot fallback (used by some Arch cloud images)
+        for conf in /boot/loader/entries/*.conf; do
+            if grep -q "^options" "$conf"; then
+                sed -i 's/^options.*/& lsm=bpf/' "$conf"
+            fi
+        done
     else
-        echo "Error: Neither grubby nor update-grub found. Cannot configure LSM." >&2
+        echo "Error: No recognized bootloader management tool found. Cannot configure LSM." >&2
         exit 1
     fi
 "#;
