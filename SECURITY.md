@@ -14,8 +14,14 @@ Please send an email to: [alexandreboutrik@protonmail.ch](mailto:alexandreboutri
 
 We highly encourage you to encrypt sensitive Proof of Concept (PoC) code or exploit details. 
 
-* **PGP Key Fingerprint:** `[40-CHARACTER PGP FINGERPRINT HERE]`
-* **Public Key:** Available on standard keyservers (e.g., keys.openpgp.org).
+> [!IMPORTANT]
+> To ensure a high level of security against future threats, our project utilizes Post-Quantum Cryptography (PQC). Our public key is a LibrePGP v5 key utilizing the Kyber algorithm. Because of this, you will need a modern PGP client (such as GnuPG 2.5.19 or later) to properly encrypt your messages to us.
+
+> [!NOTE]
+> If you are using NixOS, you can run `nix-shell --arg useCustomGnuPG true` to drop into a dev shell equipped with GnuPG 2.5.19. Please be aware that this will compile GnuPG and its dependencies from source, which will take a while (potentially hours).
+
+* **PGP Key Fingerprint:** `BB516 4C311 D9286 04099 9E699 55DEC 8C928 9A8FA D5478 39B38`.
+* **Public Key:** You can download our public key directly from this repository: [`bouclier-bleu-pubkey.asc`](./assets/bouclier-bleu-pubkey.asc).
 
 ### 3. What to Include
 
