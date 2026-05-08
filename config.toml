@@ -36,3 +36,9 @@ mount_secure = true
 
 # Process Injection & Credential Dumping Prevention (Restricts ptrace attach and memory scraping)
 # ptrace_block = false
+
+# Namespace Escape Monitor (Prevents container escapes and nested priv. escalation)
+# userns_restrict = false
+
+# Unprivileged Dump Restriction (Prevents core dump generation for ASLR bypasses)
+# dump_restrict = false
