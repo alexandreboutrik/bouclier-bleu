@@ -79,21 +79,20 @@ static __always_inline void dispatch_dump_alert(struct task_struct *task,
 
 	BPF_SAFE_MEMSET(event, sizeof(*event));
 
-	event->pid = BPF_CORE_READ(task, tgid);
+	event->pid = bpf_get_current_pid_tgid() >> 32;
 	event->uid = get_global_uid();
 	event->action_type = action_type;
 
 	/*
 	 * Memory-Boundary Safe Extraction
-	 * The TASK_COMM_LEN in the kernel is universally 16 bytes. We use
-	 * bpf_probe_read_kernel_str to safely extract the victim's process name
-	 * for the EDR telemetry without risking page faults.
+	 * Use the dedicated helper for process names instead of a raw core read.
 	 */
-	if (bpf_probe_read_kernel_str(event->comm, sizeof(event->comm),
-								  BPF_CORE_READ(task, comm)) < 0) {
+	if (bpf_get_current_comm(event->comm, sizeof(event->comm)) < 0) {
 		char unknown_str[] = "<unknown>";
 		__builtin_memcpy(event->comm, unknown_str, sizeof(unknown_str));
 	}
+
+	event->comm[sizeof(event->comm) - 1] = '\0';
 
 	bpf_ringbuf_submit(event, 0);
 }
@@ -113,7 +112,6 @@ int BPF_PROG(dump_restrict_file_open, struct file *file) {
 	}
 
 	struct task_struct *task = bpf_get_current_task_btf();
-	unsigned int flags = BPF_CORE_READ(task, flags);
 
 	/*
 	 * Fast-Path Deferral

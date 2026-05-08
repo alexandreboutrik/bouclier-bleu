@@ -156,6 +156,9 @@ int BPF_PROG(userns_restrict_sb_mount, const char *dev_name,
 	}
 
 	struct task_struct *task = bpf_get_current_task_btf();
+	if (!task)
+		return 0;
+
 	struct user_namespace *ns = BPF_CORE_READ(task, cred, user_ns);
 
 	unsigned int level = 0;
@@ -166,24 +169,28 @@ int BPF_PROG(userns_restrict_sb_mount, const char *dev_name,
 	/* Only enforce restrictions on processes within nested namespaces */
 	if (level > 0) {
 		bool is_dev_mount = false;
-		char dev_buf[5] = {};
-		char type_buf[9] = {};
+		char dev_buf[16] = {};
+		char type_buf[16] = {};
 
 		/* Check if mapping physical device blocks (e.g. /dev/sda1) */
 		if (dev_name) {
-			bpf_probe_read_kernel_str(dev_buf, sizeof(dev_buf), dev_name);
-			if (dev_buf[0] == '/' && dev_buf[1] == 'd' && dev_buf[2] == 'e' &&
-				dev_buf[3] == 'v') {
-				is_dev_mount = true;
+			if (bpf_probe_read_kernel_str(dev_buf, sizeof(dev_buf), dev_name) >
+				0) {
+				if (dev_buf[0] == '/' && dev_buf[1] == 'd' &&
+					dev_buf[2] == 'e' && dev_buf[3] == 'v') {
+					is_dev_mount = true;
+				}
 			}
 		}
 
 		/* Check if dynamically provisioning a device tmpfs */
 		if (!is_dev_mount && type) {
-			bpf_probe_read_kernel_str(type_buf, sizeof(type_buf), type);
-			if (type_buf[0] == 'd' && type_buf[1] == 'e' &&
-				type_buf[2] == 'v' && type_buf[3] == 't') {
-				is_dev_mount = true;
+			if (bpf_probe_read_kernel_str(type_buf, sizeof(type_buf), type) >
+				0) {
+				if (type_buf[0] == 'd' && type_buf[1] == 'e' &&
+					type_buf[2] == 'v' && type_buf[3] == 't') {
+					is_dev_mount = true;
+				}
 			}
 		}
 
