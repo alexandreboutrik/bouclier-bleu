@@ -30,6 +30,7 @@ pub mod ptrace_block;
 pub mod rename_entropy;
 pub mod shield;
 pub mod strict_wx;
+pub mod userns_restrict;
 
 #[cfg(test)]
 mod tests {

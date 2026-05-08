@@ -103,6 +103,18 @@ Hardens the system against advanced memory corruption exploits. Attackers routin
 
 * **State Tampering Prevention:** Attackers with initial code execution might attempt to bypass system defaults by re-enabling core dumping via `prctl()` prior to intentionally crashing. The `lsm/task_prctl` hook intercepts this syscall and strictly denies unprivileged processes from setting `PR_SET_DUMPABLE` to true, acting as a robust defense-in-depth layer.
 
+### Namespace Escape Monitor (`userns_restrict`)
+
+Provides a layer of defense against container escape vulnerabilities (e.g., Dirty Pipe, runc exploits). It neutralizes unprivileged processes attempting to create isolated user namespaces, and sandboxed processes (like Docker or Flatpak) attempting to acquire host-level privileges or mount physical devices.
+
+* **eBPF Hooks:** `lsm/userns_create`, `lsm/capable`, `lsm/sb_mount`.
+
+* **Unprivileged Namespace Creation Block:** Attackers frequently exploit unprivileged user namespace creation as the first step for staging kernel vulnerabilities (like utilizing Dirty Pipe or `nf_tables` bugs). By evaluating the true global UID (`get_global_uid()`), we block `unshare(CLONE_NEWUSER)` for all unprivileged tasks directly at the LSM boundary.
+
+* **Restricted Capability Abuse (Container Escape):** Even if an attacker compromises a process inside a legitimate container, gaining `CAP_SYS_ADMIN` inside that nested namespace allows them to mount filesystems and transition to full host compromise. The module evaluates the user namespace depth (level > 0) and strictly blocks `CAP_SYS_ADMIN` requests originating from nested sandboxes.
+
+* **Host /dev Mounting Mitigation:** If an attacker gains limited execution in a container, attempting to mount the host's physical `/dev` or establish a `devtmpfs` block device is a primary vector to directly tamper with the host kernel's physical disks or memory blocks. The module inspects mount operations within nested namespaces and instantly denies these actions.
+
 ---
 
 ## Upcoming Modules
