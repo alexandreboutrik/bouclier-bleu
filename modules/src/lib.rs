@@ -23,6 +23,7 @@
 pub mod common;
 
 // Declare the individual heuristic modules
+pub mod dump_restrict;
 pub mod exec_block;
 pub mod mount_secure;
 pub mod ptrace_block;

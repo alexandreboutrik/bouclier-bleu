@@ -15,7 +15,9 @@
 // limitations under the License.
 
 use crate::common::traits::SecurityModule;
-use crate::{exec_block, mount_secure, ptrace_block, rename_entropy, shield, strict_wx};
+use crate::{
+	dump_restrict, exec_block, mount_secure, ptrace_block, rename_entropy, shield, strict_wx,
+};
 use std::sync::Arc;
 
 /// Inversion of Control (IoC) Registry Builder.
@@ -31,6 +33,7 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 		Arc::new(mount_secure::MountSecure::new()),
 		Arc::new(strict_wx::StrictWx::new()),
 		Arc::new(ptrace_block::PtraceBlock::new()),
+		Arc::new(dump_restrict::DumpRestrict::new()),
 		// Future expansions: e.g. Arc::new(ransomware_heur::CanaryDrop::new()),
 	]
 }

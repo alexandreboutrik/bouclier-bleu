@@ -14,14 +14,15 @@ Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as li
 
 | Component / Module | Memory Consumption |
 | :--- | :--- |
-| **User-Space Daemon (VmRSS)** | 7856 kB |
+| **User-Space Daemon (VmRSS)** | 8564 kB |
 | **`rename_entropy` (eBPF Maps)** | 1555 kB  |
 | **`exec_block` (eBPF Maps)** | 1007 kB |
 | **`strict_wx` (eBPF Maps)** | 447 kB |
 | **`shield` (eBPF Maps)** | 304 kB |
 | **`mount_secure` (eBPF Maps)** | 302 kB |
 | **`ptrace_block` (eBPF Maps)** | 293 kB |
-| **Total Active Footprint** | **~11.77 MB** |
+| **`dump_restrict` (eBPF Maps)** | 270 kB |
+| **Total Active Footprint** | **~12.74 MB** |
 
 ---
 
@@ -91,6 +92,16 @@ Hardens the Linux `ptrace` capability boundary. It restricts unprivileged proces
 * **Process Injection Mitigator:** By evaluating the true global UID (`get_global_uid()`), the module bypasses container or namespace mappings where a local process might falsely appear as root. Unprivileged cross-process attachment (`PTRACE_MODE_ATTACH`) is universally blocked.
 
 * **Hollow Process Prevention:** Process hollowing relies heavily on the `PTRACE_TRACEME` call. The `lsm/ptrace_traceme` hook isolates and prevents unprivileged parent processes from authorizing trace actions on their children, neutralizing dynamic shellcode staging.
+
+## Unprivileged Dump Restriction (`dump_restrict`)
+
+Hardens the system against advanced memory corruption exploits. Attackers routinely crash worker threads intentionally to force the kernel to write a core dump, leaking memory layouts to bypass ASLR and construct ROP chains, or exposing plaintext credentials left in memory.
+
+* **eBPF Hooks:** `lsm/file_open`, `lsm/task_prctl`.
+
+* **Core Dump File Write Interception:** When a process crashes (e.g., via SIGSEGV), the kernel attempts to generate a core dump and elevates the crashing thread's flags to include `PF_DUMPCORE`. By intercepting `file_open` and checking this flag, the module cleanly blocks the kernel from creating the core file on disk for any unprivileged process. This neutralizes the ASLR leak without causing a kernel panic.
+
+* **State Tampering Prevention:** Attackers with initial code execution might attempt to bypass system defaults by re-enabling core dumping via `prctl()` prior to intentionally crashing. The `lsm/task_prctl` hook intercepts this syscall and strictly denies unprivileged processes from setting `PR_SET_DUMPABLE` to true, acting as a robust defense-in-depth layer.
 
 ---
 
