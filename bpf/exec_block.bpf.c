@@ -47,6 +47,19 @@ struct exec_alert {
 	char path[PATH_MAX];
 };
 
+/*
+ * CO-RE Stub
+ * This internal struct is missing from the generic vmlinux.h.
+ * We define a minimal version containing only the fields we need.
+ * The `preserve_access_index` attribute tells the BPF loader to ignore
+ * our dummy layout here and dynamically resolve the true offsets from
+ * the target machine's kernel BTF at load time.
+ */
+struct shmem_inode_info__stub {
+	int seals;
+	struct inode vfs_inode;
+} __attribute__((preserve_access_index));
+
 BOUCLIER_PATH_BUFFER_MAP;
 BOUCLIER_PROTECTED_DIRS_MAP;
 BOUCLIER_MODULE_ALERTS;
@@ -138,24 +151,26 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		 * CO-RE Container-Of Lookup is used to avoid missing libbpf macro
 		 * errors across different distributions.
 		 */
-		if (!bpf_core_field_exists(((struct shmem_inode_info *)0)->vfs_inode)) {
+		if (!bpf_core_field_exists(
+				((struct shmem_inode_info__stub *)0)->vfs_inode)) {
 			return 0; // Graceful fallback on unsupported kernels
 		}
 
 		size_t offset = __builtin_preserve_field_info(
-			((struct shmem_inode_info *)0)->vfs_inode, 0);
+			((struct shmem_inode_info__stub *)0)->vfs_inode, 0);
 
 		/*
 		 * Arithmetic Bounds Validation
 		 * Prevents arbitrary memory reads or underflows if the CO-RE
 		 * calculation yields 0 or an absurdly large offset.
 		 */
-		if (offset == 0 || offset > sizeof(struct shmem_inode_info)) {
+		if (offset == 0 ||
+			offset > bpf_core_type_size(struct shmem_inode_info__stub)) {
 			return 0;
 		}
 
-		struct shmem_inode_info *info =
-			(struct shmem_inode_info *)((void *)f_inode - offset);
+		struct shmem_inode_info__stub *info =
+			(struct shmem_inode_info__stub *)((void *)f_inode - offset);
 
 		/*
 		 * If the CO-RE read fails entirely, default to allowing execution to
