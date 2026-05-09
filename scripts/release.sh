@@ -211,6 +211,22 @@ function prepare_cargo_release() {
 		echo "  Warning: README.md not found, skipping..."
 	fi
 
+	if [ -f "flake.nix" ]; then
+		if grep -q "^[[:space:]]*version = \"${BB_VERSION}\";" flake.nix; then
+			echo "  flake.nix is already at v${BB_VERSION}, skipping..."
+		else
+			sed -i -E "s/([[:space:]]*version[[:space:]]*=[[:space:]]*)\".*\";/\1\"${BB_VERSION}\";/" flake.nix ||
+				{
+					echo "Failed to update version in flake.nix. Exiting."
+					exit 1
+				}
+			echo "  Updated flake.nix to v${BB_VERSION}"
+			CHANGES_MADE=1
+		fi
+	else
+		echo "  Warning: flake.nix not found, skipping..."
+	fi
+
 	if [ "${CHANGES_MADE}" -eq 1 ]; then
 		echo -e "\n➤ Updating Cargo.lock dependencies..."
 		cargo update ||
@@ -220,7 +236,7 @@ function prepare_cargo_release() {
 			}
 
 		echo -e "\n➤ Committing release preparation..."
-		git add "${CARGO_FILES[@]}" README.md Cargo.lock ||
+		git add "${CARGO_FILES[@]}" README.md flake.nix Cargo.lock ||
 			{
 				echo "Failed to stage release files. Exiting."
 				exit 1
