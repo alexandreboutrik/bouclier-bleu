@@ -63,33 +63,44 @@ fn main() {
 	let vmlinux_path = bpf_include_dir.join("vmlinux.h");
 
 	/*
-	 * Dynamically dump the BPF Type Format (BTF) from the currently running
-	 * kernel into a fresh vmlinux.h. This architectural choice ensures the
-	 * eBPF objects are compiled against the exact memory layouts of the host
-	 * system, enabling CO-RE (Compile Once - Run Everywhere) without
-	 * committing a 100k+ line header.
+	 * BTF Path Resolution
+	 * We attempt to consume the VMLINUX_H_PATH environment variable for
+	 * reproducible builds (e.g., NixOS). On failure (e.g., local development),
+	 * we fallback to dynamically dumping the host kernel BTF via bpftool
+	 * using functional combinators.
 	 */
-	let bpftool_out = Command::new("bpftool")
-		.args([
-			"btf",
-			"dump",
-			"file",
-			"/sys/kernel/btf/vmlinux",
-			"format",
-			"c",
-		])
-		.output()
-		.expect("Failed to execute bpftool. Is linux-tools-common installed?");
+	env::var("VMLINUX_H_PATH")
+		.map(|pre_generated_path| {
+			println!(
+				"cargo:warning=Using pre-generated vmlinux.h from {}",
+				pre_generated_path
+			);
+			fs::copy(&pre_generated_path, &vmlinux_path)
+				.expect("Failed to copy pre-generated vmlinux.h");
+		})
+		.unwrap_or_else(|_| {
+			let bpftool_out = Command::new("bpftool")
+				.args([
+					"btf",
+					"dump",
+					"file",
+					"/sys/kernel/btf/vmlinux",
+					"format",
+					"c",
+				])
+				.output()
+				.expect("Failed to execute bpftool. Is linux-tools-common installed?");
 
-	if !bpftool_out.status.success() {
-		panic!(
-			"Failed to dump vmlinux.h. bpftool stderr: {}",
-			String::from_utf8_lossy(&bpftool_out.stderr)
-		);
-	}
+			// Replaces the 'if !success' branch with a declarative assertion
+			assert!(
+				bpftool_out.status.success(),
+				"Failed to dump vmlinux.h. bpftool stderr: {}",
+				String::from_utf8_lossy(&bpftool_out.stderr)
+			);
 
-	fs::write(&vmlinux_path, bpftool_out.stdout)
-		.expect("Failed to write dynamically generated vmlinux.h");
+			fs::write(&vmlinux_path, bpftool_out.stdout)
+				.expect("Failed to write dynamically generated vmlinux.h");
+		});
 
 	let entries = fs::read_dir(bpf_dir).expect("Failed to read bpf dir");
 
