@@ -23,6 +23,7 @@
 #include <asm-generic/errno.h>
 
 #include "headers/module_core.h"
+#include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -38,9 +39,14 @@ char LICENSE[] SEC("license") = "GPL";
 #define PR_SET_DUMPABLE 4
 #endif
 
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
+
 /* Telemetry Action Identifiers */
 #define ACTION_COREDUMP_FILE 1
 #define ACTION_PRCTL_TAMPER 2
+#define ACTION_PIPED_HANDLER 3
 
 /**
  * struct dump_alert - Telemetry Payload Contract
@@ -59,8 +65,25 @@ struct dump_alert {
 	char comm[16];
 };
 
+/**
+ * pending_crash_blocks - State Tracking Intermediary Map
+ *
+ * A single-element Array map serving as an atomic lockbox between the
+ * unprivileged crashing thread and the asynchronous root `kworker` thread.
+ * Because piped handlers execute in a root context, the original attacker's
+ * identity is lost by the time the execution hook fires. This map acts as a
+ * temporal bridge, allowing pristine telemetry to cross the context gap.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct dump_alert);
+	__uint(max_entries, 1);
+} pending_crash_blocks SEC(".maps");
+
 BOUCLIER_MODULE_ALERTS;
 BOUCLIER_MODULE_STATE_MAP;
+BOUCLIER_PROTECTED_FILES_MAP;
 
 /**
  * dispatch_dump_alert() - Telemetry Payload Compilation
@@ -157,7 +180,7 @@ SEC("lsm/task_prctl")
 int BPF_PROG(dump_restrict_task_prctl, int option, unsigned long arg2,
 			 unsigned long arg3, unsigned long arg4, unsigned long arg5) {
 	if (!is_module_active(&state_map)) {
-		return 0;
+		return -ENOSYS;
 	}
 
 	/*
@@ -176,6 +199,155 @@ int BPF_PROG(dump_restrict_task_prctl, int option, unsigned long arg2,
 
 			return -EPERM;
 		}
+	}
+
+	return -ENOSYS;
+}
+
+/*
+ * Defense Heuristic : Piped Core Dump Interception (Observer Phase)
+ * REPLACES: kprobe/do_coredump (Unstable/Inlined)
+ * REPLACES: lsm/file_alloc_security (Disabled on target kernel)
+ * When `core_pattern` utilizes a pipe (|), the kernel routes the dump to a
+ * user-mode helper. It prepares this by invoking `call_usermodehelper_setup`
+ * directly from within `do_coredump()`. This exported API is a highly stable
+ * kprobe target. Because we are still executing in the context of the crashing
+ * thread, we can reliably extract the unprivileged attacker's exact UID and
+ * PID before the asynchronous root `kworker` takes over.
+ */
+SEC("kprobe/call_usermodehelper_setup")
+int BPF_KPROBE(dump_restrict_observer) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
+
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	/*
+	 * Fast-Path Deferral
+	 * call_usermodehelper_setup is used system-wide for many tasks (e.g.,
+	 * udev, cgroups). If core_state is NULL, this execution has nothing
+	 * to do with a core dump, so we exit instantly.
+	 */
+	void *core_state = BPF_CORE_READ(task, signal, core_state);
+	if (!core_state) {
+		return 0;
+	}
+
+	__u32 uid = get_global_uid();
+
+	/* Fast-Path: We do not intercept administrative root crashes */
+	if (uid == 0) {
+		return 0;
+	}
+
+	/* Capture the pristine context of the unprivileged attacker */
+	struct dump_alert payload = {};
+	payload.pid = bpf_get_current_pid_tgid() >> 32;
+	payload.uid = uid;
+	payload.action_type = ACTION_PIPED_HANDLER;
+
+	if (bpf_get_current_comm(payload.comm, sizeof(payload.comm)) < 0) {
+		char unknown_str[] = "<unknown>";
+		__builtin_memcpy(payload.comm, unknown_str, sizeof(unknown_str));
+	}
+	payload.comm[sizeof(payload.comm) - 1] = '\0';
+
+	/*
+	 * Stash the context into the temporal lockbox for the Enforcement hook
+	 * (`bprm_check_security`) to consume when the kworker spawns the handler.
+	 */
+	__u32 key = 0;
+	bpf_map_update_elem(&pending_crash_blocks, &key, &payload, BPF_ANY);
+
+	return 0;
+}
+
+/*
+ * Defense Heuristic : Piped Core Dump Interception (Enforcement Phase)
+ * Triggers asynchronously when the root `kworker` attempts to spawn the
+ * handler. It locks the hardware watchlist and cross-references the
+ * state-tracking map to intelligently differentiate between benign root
+ * crashes and malicious unprivileged pipeline abuse.
+ */
+SEC("lsm/bprm_check_security")
+int BPF_PROG(dump_restrict_bprm_check, struct linux_binprm *bprm) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
+
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	/*
+	 * Ancestry Verification (The Usermodehelper Check)
+	 * Usermode helpers are spawned by kernel workqueues. We rely on a
+	 * fundamental architectural property: Kernel threads do not possess an
+	 * mm_struct (memory descriptor). If the parent's mm is not NULL, this is
+	 * a standard user application, and we exit early.
+	 */
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	void *parent_mm = BPF_CORE_READ(parent, mm);
+
+	if (parent_mm != NULL) {
+		return 0;
+	}
+
+	/*
+	 * Hardware-Backed Identity Verification
+	 * Instead of vulnerable string parsing (d_name.name) which causes stack
+	 * uninitialization bugs and allows hardlink spoofing, we extract the
+	 * physical Inode and Device ID of the executable being launched.
+	 */
+	struct file *file = bprm->file;
+	if (!file)
+		return 0;
+
+	struct inode *f_inode = BPF_CORE_READ(file, f_inode);
+	if (!f_inode)
+		return 0;
+
+	struct dir_id bin_id = {};
+	extract_dir_id_from_inode(f_inode, &bin_id);
+
+	/*
+	 * State Tracking Enforcement
+	 * If the binary being executed matches the hardware footprint of the
+	 * handler registered in `core_pattern`, we consult the lockbox.
+	 */
+	__u8 *is_handler = bpf_map_lookup_elem(&protected_files, &bin_id);
+	if (is_handler && *is_handler == 1) {
+
+		__u32 key = 0;
+		struct dump_alert *payload =
+			bpf_map_lookup_elem(&pending_crash_blocks, &key);
+
+		/*
+		 * If a payload exists and the PID is non-zero, this execution was
+		 * triggered by the unprivileged crash we observed milliseconds ago.
+		 */
+		if (payload && payload->pid != 0) {
+
+			// Dispatch the pristine telemetry stashed by the Observer hook
+			struct dump_alert *event =
+				bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+			if (event) {
+				__builtin_memcpy(event, payload, sizeof(*event));
+				bpf_ringbuf_submit(event, 0);
+			}
+
+			// Consume the token (Reset the map state to 0)
+			struct dump_alert empty = {};
+			bpf_map_update_elem(&pending_crash_blocks, &key, &empty, BPF_ANY);
+
+			return -EPERM;
+		}
+
+		/*
+		 * If payload->pid == 0, the map was empty. This means the kprobe
+		 * ignored the crash because it originated from an administrative Root
+		 * process.
+		 */
+		return 0;
 	}
 
 	return 0;

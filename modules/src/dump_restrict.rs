@@ -14,8 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::common::traits::BpfReader;
+use crate::common::fs_utils::get_secure_hardware_key;
+use crate::common::traits::{BpfReader, MapProvider};
 use crate::define_security_module;
+use libbpf_rs::MapCore;
 
 /// Telemetry payload yielded by the `dump_restrict` BPF hooks.
 ///
@@ -68,6 +70,7 @@ impl DumpAlert {
 // Telemetry action identifiers bridging the kernel BPF definitions.
 const ACTION_COREDUMP_FILE: u32 = 1;
 const ACTION_PRCTL_TAMPER: u32 = 2;
+const ACTION_PIPED_HANDLER: u32 = 3;
 
 /*
  * Defense Heuristic : Core Dump Disabling (ASLR Bypass Mitigator)
@@ -97,6 +100,7 @@ define_security_module!(
 		let action_str = match alert.action_type {
 			ACTION_COREDUMP_FILE => "COREDUMP_GENERATION",
 			ACTION_PRCTL_TAMPER => "PRCTL_DUMPABLE_TAMPER",
+			ACTION_PIPED_HANDLER => "PIPED_COREDUMP_HANDLER",
 			_ => "UNKNOWN_VIOLATION",
 		};
 
@@ -104,9 +108,67 @@ define_security_module!(
 			"Bouclier Bleu [BLOCK]: PID {} (UID {}) attempted [{}] via process '{}'.",
 			alert.pid, alert.uid, action_str, alert.comm
 		);
+	},
+	capacities: || -> std::collections::HashMap<String, u32> {
+		/*
+		 * Map Sizing Heuristic
+		 * We only need to store the singular hardware footprint of the
+		 * registered `core_pattern` handler. A capacity of 16 is plenty to
+		 * avoid verifier rejection while maintaining a microscopic memory
+		 * footprint.
+		 */
+		let mut caps = std::collections::HashMap::new();
+		caps.insert("protected_files".to_string(), 16);
+		caps
+	},
+	init: |provider: &dyn MapProvider| -> Result<(), String> {
+		// Initialize the module state to active
+		// This guarantees `is_module_active` returns true during the initial
+		// boot.
+		let state_map = provider.get_map("state_map")?;
+		let key = 0u32.to_ne_bytes();
+		let val = 1u32.to_ne_bytes();
+		state_map.update(&key, &val, libbpf_rs::MapFlags::ANY)
+			.map_err(|e| format!("Failed to initialize state_map: {}", e))?;
+
+		// Hardware-backed indexing of the piped core dump handler
+		let protected_files = provider.get_map("protected_files")?;
+
+		/*
+		 * Temporal Context Resolution
+		 * The Rust userland acts as the Control Plane, dynamically evaluating
+		 * the host's `/proc/sys/kernel/core_pattern` at boot. If the pattern
+		 * dictates a piped usermode helper (e.g., `systemd-coredump` or
+		 * `apport`), we calculate its physical Inode + DevID and inject it
+		 * into the eBPF map. This allows the kernel hooks to neutralize
+		 * hardlink spoofing entirely.
+		 */
+		let Ok(core_pattern) = std::fs::read_to_string("/proc/sys/kernel/core_pattern") else {
+			return Ok(());
+		};
+
+		let Some(stripped) = core_pattern.trim().strip_prefix('|') else {
+			return Ok(());
+		};
+
+		// Extract the absolute binary path (ignoring trailing arguments like
+		// %P %u)
+		let path_str = stripped.split_whitespace().next().unwrap_or("");
+		if path_str.is_empty() {
+			return Ok(());
+		}
+
+		if let Ok(key_bytes) = get_secure_hardware_key(path_str) {
+			let is_protected: [u8; 1] = [1];
+
+			protected_files.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+				.map_err(|e| format!("Failed to update protected_files map: {}", e))?;
+
+			println!("Bouclier Bleu [Setup]: Core dump piped handler '{}' indexed.", path_str);
+		} else {
+			println!("Bouclier Bleu [Warning]: Could not resolve hardware key for piped handler '{}'.", path_str);
+		}
+
+		Ok(())
 	}
-	// Note: We omit the `capacities` and `init` closures here because this
-	// module relies entirely on the global `state_map` and the standard
-	// RingBuffer. It does not require any hardware-backed watchlists or
-	// dynamic eBPF Hash maps.
 );

@@ -31,6 +31,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
 
 DAEMON_PID=""
 ORIGINAL_CORE_PATTERN=""
+ORIGINAL_CORE_USES_PID=""
+
+# Dummy piped handler paths
+DUMMY_HANDLER="/opt/bb_dummy_handler.sh"
+HANDLER_LOG="/tmp/handler_called.log"
 
 # ==========================================
 # TEST LIFECYCLE
@@ -48,6 +53,8 @@ function teardown() {
 	fi
 
 	rm -rf "${DUMP_TESTER}" "${TEST_WORK_DIR}" "${DAEMON_LOG}"
+	rm -f "${DUMMY_HANDLER}" "${HANDLER_LOG}"
+	rm -f /var/run/bouclier-bleu/control.sock # Ensure socket is cleaned up
 	userdel -r "${TEST_USER}" 2>/dev/null || true
 }
 
@@ -65,14 +72,23 @@ function provision_env() {
 	mkdir -p "${TEST_WORK_DIR}"
 	chmod 777 "${TEST_WORK_DIR}"
 
+	# Create a dummy piped handler
+	cat <<'EOF' >"${DUMMY_HANDLER}"
+#!/usr/bin/env bash
+# Simply touch a file to prove execution occurred
+echo "executed" > "/tmp/handler_called.log"
+EOF
+	chmod +x "${DUMMY_HANDLER}"
+
 	# Capture existing core_pattern to restore later
 	ORIGINAL_CORE_PATTERN=$(sysctl -n kernel.core_pattern)
 	ORIGINAL_CORE_USES_PID=$(sysctl -n kernel.core_uses_pid 2>/dev/null || echo "1")
 
-	# Force the kernel to write core dumps locally with a strict name
-	# Bypassing piped handlers AND disabling PID appending
-	sysctl -w kernel.core_pattern="core" >/dev/null 2>&1 || {
-		echo "[-] Failed to set kernel.core_pattern for testing."
+	# CRITICAL PRE-LOAD: Set the piped pattern BEFORE starting the daemon
+	# This guarantees the Rust `init()` closure naturally discovers the handler
+	# and populates the eBPF hardware map, avoiding mid-test daemon restarts.
+	sysctl -w kernel.core_pattern="|${DUMMY_HANDLER}" >/dev/null 2>&1 || {
+		echo "[-] Failed to set piped kernel.core_pattern."
 		exit 1
 	}
 	sysctl -w kernel.core_uses_pid=0 >/dev/null 2>&1 || true
@@ -152,7 +168,8 @@ function verify_root_prctl() {
 function verify_unprivileged_crash() {
 	echo "  [*] Validating Unprivileged Core Dump Generation (Expected: BLOCK)..."
 
-	# Clear any old cores
+	# Dynamically switch back to a standard file-based core dump
+	sysctl -w kernel.core_pattern="core" >/dev/null 2>&1
 	rm -f "${TEST_WORK_DIR}/core"
 
 	set +e
@@ -178,11 +195,17 @@ function verify_unprivileged_crash() {
 function verify_root_crash() {
 	echo "  [*] Validating Root Core Dump Generation (Expected: ALLOW)..."
 
+	# Ensure we are testing file-based dumps
+	sysctl -w kernel.core_pattern="core" >/dev/null 2>&1
 	rm -f "${TEST_WORK_DIR}/core"
 
 	set +e
-	# Trigger the crash as root
-	bash -c "cd ${TEST_WORK_DIR} && ulimit -c unlimited && ${DUMP_TESTER} crash" >/dev/null 2>&1
+	# Trigger the crash inside a subshell to suppress bash's "Segmentation fault" std_err leak
+	(
+		cd "${TEST_WORK_DIR}" || exit 1
+		ulimit -c unlimited
+		"${DUMP_TESTER}" crash
+	) >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
@@ -197,6 +220,67 @@ function verify_root_crash() {
 	fi
 
 	echo "  [+] Root core dump creation cleanly bypassed by fast-path."
+}
+
+function verify_unprivileged_piped_crash() {
+	echo "  [*] Validating Unprivileged Piped Core Dump (Expected: BLOCK)..."
+
+	# Switch the kernel back to piped mode. Because the handler was already indexed
+	# by the daemon at boot, we do not need to restart the daemon.
+	sysctl -w kernel.core_pattern="|${DUMMY_HANDLER}" >/dev/null 2>&1
+	rm -f "${HANDLER_LOG}"
+
+	set +e
+	su - "${TEST_USER}" -c "cd ${TEST_WORK_DIR} && ulimit -c unlimited && ${DUMP_TESTER} crash" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 139 ]]; then
+		echo "[-] Assertion failed: Crash binary did not terminate with SIGSEGV as expected."
+		exit 1
+	fi
+
+	# The dual-hook state tracking architecture successfully extracts the context
+	# via the kprobe and issues an -EPERM block via bprm_check_security.
+	if [[ -f "${HANDLER_LOG}" ]]; then
+		echo "[-] Assertion failed: Piped handler was executed for an unprivileged user! (Bypass detected)"
+		exit 1
+	fi
+
+	echo "  [+] Unprivileged piped core dump cleanly short-circuited (-EPERM)."
+}
+
+function verify_root_piped_crash() {
+	echo "  [*] Validating Root Piped Core Dump (Expected: ALLOW)..."
+
+	sysctl -w kernel.core_pattern="|${DUMMY_HANDLER}" >/dev/null 2>&1
+	rm -f "${HANDLER_LOG}"
+
+	set +e
+	# Suppress segfault text by running in a subshell
+	(
+		cd "${TEST_WORK_DIR}" || exit 1
+		ulimit -c unlimited
+		"${DUMP_TESTER}" crash
+	) >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 139 ]]; then
+		echo "[-] Assertion failed: Crash binary did not terminate with SIGSEGV as expected."
+		exit 1
+	fi
+
+	sleep 0.5
+
+	# Because we deployed the State-Tracking Architecture (kprobe + bprm_check_security),
+	# the eBPF hook knows this crash originated from root and should allow it natively.
+	if [[ ! -f "${HANDLER_LOG}" ]]; then
+		echo "[-] Assertion failed: Piped handler was NOT executed for root. Dual-hook correlation failed."
+		exit 1
+	fi
+
+	echo "  [+] Root piped core dump successfully dispatched."
 }
 
 function verify_ipc_detachment() {
@@ -230,6 +314,8 @@ verify_unprivileged_prctl
 verify_root_prctl
 verify_unprivileged_crash
 verify_root_crash
+verify_unprivileged_piped_crash
+verify_root_piped_crash
 verify_ipc_detachment
 
 echo "  [+] Module 'dump_restrict' validation passed."
