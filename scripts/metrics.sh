@@ -161,10 +161,29 @@ function gather_static_metrics() {
 		for category in component integration fuzzing benchmark threat; do
 			local cat_dir="${TESTS_DIR}/${category}"
 			if [ -d "${cat_dir}" ]; then
-				local count
-				# Refined to only count actual test scripts/code to avoid
-				# counting READMEs or data files
-				count=$(find "${cat_dir}" -type f \( -name '*.rs' -o -name '*.sh' \) 2>/dev/null | wc -l | tr -d ' ')
+				local count=0
+				
+				# Count .rs files
+				local rs_count
+				rs_count=$(find "${cat_dir}" -type f -name '*.rs' 2>/dev/null | wc -l | tr -d ' ')
+				
+				# Count all verify_* functions, but ignore
+				# verify_ipc_detachment
+				local sh_count
+				sh_count=$(find "${cat_dir}" -type f -name '*.sh' -exec grep -hE '^(function\s+)?verify_[a-zA-Z0-9_]+\s*\(\)' {} + 2>/dev/null | grep -v 'verify_ipc_detachment' | wc -l | tr -d ' ')
+
+				# Add exactly 1 if verify_ipc_detachment actually exists in
+				# this specific category. We use grep -l to output the
+				# filename. If it's found, the variable won't be empty.
+				local has_detachment
+				has_detachment=$(find "${cat_dir}" -type f -name '*.sh' -exec grep -lE '^(function\s+)?verify_ipc_detachment\s*\(\)' {} + 2>/dev/null | head -n 1)
+				
+				if [ -n "${has_detachment}" ]; then
+					sh_count=$((sh_count + 1))
+				fi
+
+				count=$((rs_count + sh_count))
+				
 				TESTS_COUNT=$((TESTS_COUNT + count))
 				if [ "${count}" -gt 0 ]; then
 					TESTS_DETAILS="${TESTS_DETAILS}\n      - ${category}: ${count}"
