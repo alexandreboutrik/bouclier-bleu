@@ -128,11 +128,34 @@ define_security_module!(
 		// tokens
 		let target_binaries = [
 			"/usr/sbin/sshd",
-			"/usr/bin/gnome-keyring-daemon",
+			"/usr/bin/sshd",
+			"/usr/sbin/sshd-session",
+			"/usr/bin/sshd-session",
 			"/usr/bin/passwd",
 			"/usr/bin/su",
 			"/usr/bin/sudo",
+
 			"/sbin/pam_timestamp_check",
+			"/usr/sbin/pam_timestamp_check",
+			"/sbin/unix_chkpwd",
+			"/usr/sbin/unix_chkpwd",
+
+			"/usr/sbin/sssd",
+			"/usr/bin/sssd",
+			"/usr/lib/systemd/systemd-logind",
+			"/usr/lib/polkit-1/polkitd",
+			"/usr/libexec/polkit-1/polkitd",
+
+			"/usr/bin/gnome-keyring-daemon",
+			"/usr/bin/kwalletd5",
+			"/usr/bin/gpg-agent",
+
+			"/usr/sbin/gdm3",
+			"/usr/sbin/gdm",
+			"/usr/bin/gdm",
+			"/usr/sbin/lightdm",
+			"/usr/bin/lightdm",
+			"/usr/bin/sddm",
 		];
 		let is_protected: [u8; 1] = [1];
 
