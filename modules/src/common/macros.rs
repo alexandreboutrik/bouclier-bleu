@@ -64,7 +64,7 @@ macro_rules! define_security_module {
         impl $struct_name {
             pub fn new() -> Self {
                 Self {
-                    is_active: std::sync::atomic::AtomicBool::new(true),
+                    is_active: std::sync::atomic::AtomicBool::new(false),
                 }
             }
         }
