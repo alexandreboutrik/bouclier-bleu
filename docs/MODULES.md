@@ -5,116 +5,99 @@
 > [!NOTE]
 > Attackers often try to bypass mechanisms using tricks like mount namespace spoofing (`unshare -m`) or symlink manipulation. To counter this, our core modules ignore easily spoofed file paths and instead rely on hard hardware IDs (like the physical Inode and Superblock Device IDs).
 
-## Performance & Memory Footprint
+## Core Metrics, Memory Footprint & Performance
 
-Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible.
+Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-> [!IMPORTANT]
-> Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
+`Bouclier Bleu` currently operates across **26 eBPF hooks**, driving **8 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **35 automated tests**, encompassing 19 unit, 10 component, 3 integration, and 3 benchmark validation pipelines.
 
-| Component / Module | Memory Consumption |
-| :--- | :--- |
-| **User-Space Daemon (VmRSS)** | 9132 kB |
-| **`rename_entropy` (eBPF Maps)** | 1555 kB  |
-| **`exec_block` (eBPF Maps)** | 1007 kB |
-| **`strict_wx` (eBPF Maps)** | 447 kB |
-| **`shield` (eBPF Maps)** | 304 kB |
-| **`mount_secure` (eBPF Maps)** | 302 kB |
-| **`ptrace_block` (eBPF Maps)** | 293 kB |
-| **`dump_restrict` (eBPF Maps)** | 270 kB |
-| **`userns_restrict` (eBPF Maps)** | 270 kB |
-| **Total Active Footprint** | **~13.58 MB** |
+### Memory Footprint
+
+The system maintains a highly optimized memory footprint totaling approximately **18,003 kB (~18 MB)** during active enforcement:
+
+- Userland Engine: 13,548 kB
+- eBPF Maps (Kernel Memory): 4,455 kB (total)
+    - rename_entropy: 1,555 kB
+    - exec_block: 1,007 kB
+    - strict_wx: 447 kB
+    - shield: 304 kB
+    - mount_secure: 302 kB
+    - ptrace_block: 293 kB
+    - dump_restrict: 273 kB
+    - userns_restrict: 270 kB
 
 ---
 
-## Active Modules
+## I. Core System Self-Defense
 
-Below is an overview of the currently active modules and their technical implementations.
-
-### Ransomware Entropy Monitor (`rename_entropy`)
-
-Detects and neutralizes ransomware encryption phases in real-time by evaluating the structural randomness of file modifications. 
-
-* **eBPF Hook:** `lsm/path_rename`.
-
-* **How it works:** When a file gets renamed (e.g., an attacker appends `.locked`), we calculate the new filename's Shannon entropy. Because the kernel's eBPF verifier is incredibly strict and lacks native floating-point math, we use a custom, pre-computed `scaled_log2` lookup table. This allows us to execute the math instantly in O(1) time using only integers. If the randomness crosses our threshold (a scaled value > 4300), the BPF program immediately fires a SIGKILL (signal 9) directly from kernel-space. This instantly terminates the thread before it can return to user-space, completely eliminating race conditions.
-
-* **Watchlist:** By hooking `vfs_mkdir` and `vfs_rename`, the protection cascades. If a threat actor builds a payload in `/tmp` and moves it to a protected directory like `/home`, the kernel automatically adds those new child inodes to our hardware-backed watchlist.
-
-### World-Writable Execution Block (`exec_block`)
-
-This stops memory corruption exploits and web-shell droppers from running secondary payloads out of historically insecure, world-writable directories.
-
-* **eBPF Hook:** `lsm/bprm_check_security`.
-
-* **Path Validation:** As explained before, instead of looking at the easily spoofed `bprm->filename`, we check the underlying hardware IDs right from the dentry cache, completely bypassing namespace tricks.
-
-* **Catching Fileless Malware**: Attackers frequently use memory-backed payloads (`memfd_create`) or nameless temporary files (`O_TMPFILE`) to avoid touching the disk. We catch these by checking if the VFS link count (`i_nlink`) is zero. If we detect a fileless execution attempt, we demand that the memory segment be completely immutable (`F_SEAL_WRITE`) - and if it isn't, we block it.
+Tamper-protection mechanisms designed to ensure the integrity of the Bouclier Bleu architecture and the host kernel.
 
 ### Self-Defense Shield (`shield`)
 
-This hardens `Bouclier Bleu` itself against tampering, unprivileged unloading, and privilege escalation attacks.
+This module hardens the endpoint detection agent against tampering, unprivileged unloading, and privilege escalation attacks utilizing BPF hooks at `lsm/file_open`, `lsm/bpf`, and `lsm/syslog`.
 
-* **eBPF Hooks:** `lsm/file_open`, `lsm/bpf`, `lsm/syslog`.
+To guarantee configuration immutability, the module enforces a strict `O_RDONLY` policy on core operational files (such as `config.toml`) for all unprivileged users, acting as a fail-safe against reckless administrative permissions (`chmod 777`). Furthermore, it locks the system's architecture by restricting the `bpf()` syscall to root users, preventing advanced malware from detaching eBPF hooks. Finally, it prevents KASLR (Kernel Address Space Layout Randomization) bypasses by enforcing `kernel.dmesg_restrict=1` natively at the LSM layer, stopping unprivileged threat actors from scraping kernel pointer addresses from the syslog ring buffer.
 
-* **Configuration Immutability:** It forces an `O_RDONLY` policy on core files (like `config.toml`) for unprivileged users. This acts as a fail-safe even if a sysadmin accidentally runs a reckless `chmod 777`.
+## II. Ransomware & Filesystem Integrity
 
-* **Architecture Locking:** It restricts the `bpf()` syscall to root users, preventing advanced malware from detaching the our eBPF hooks.
+Heuristics designed to detect and intercept unauthorized mass-encryption events and destructive filesystem operations.
 
-* **KASLR Bypass Prevention:** Strict enforcement of `kernel.dmesg_restrict=1` at the LSM layer to stop unprivileged reads of the kernel ring buffer, thereby preventing attackers from scraping kernel pointer addresses.
+### Ransomware Entropy Monitor (`rename_entropy`)
 
-### Removable Media Neutralizer (`mount_secure`)
+Operating primarily on the `lsm/path_rename hook`, this module detects and neutralizes ransomware encryption phases in real-time by evaluating the structural randomness of file modifications.
 
-Prevents physical USB drops or rogue SD cards from executing binaries or establishing privilege escalation footholds.
+When a file is renamed (e.g., an attacker appending a `.locked` extension), the engine calculates the newly generated filename's Shannon entropy. Because the kernel's eBPF verifier lacks native floating-point mathematics, we utilize a highly optimized, pre-computed `scaled_log2` lookup table, allowing O(1) integer-based execution. If the randomness exceeds the defined threshold (a scaled value > 4300), the BPF program immediately fires a `SIGKILL` (signal 9) directly from kernel-space. This instantly terminates the malicious thread before it can return to user-space, eliminating race conditions. The module also features a cascading watchlist by hooking `vfs_mkdir` and `vfs_rename`; if a threat actor builds a payload in an unmonitored directory like `/tmp` and moves it to a protected space, the kernel automatically inherits and indexes those new child inodes.
 
-* **eBPF Hook:** `lsm/sb_mount`.
+## III. Memory Corruption & Exploit Mitigation
 
-* **How it works:** We intercept mount operations and check the block device prefixes (like `/dev/sd*` or `/dev/mmcblk*`) targeting common directories (`/media`, `/mnt`, `/run/m`). When we see a match, we check the `MS_NOEXEC`, `MS_NOSUID`, and `MS_NODEV` flags. This guarantees the media is safe, regardless of what arbitrary filesystem is being used to try and bypass us.
+Defense-in-depth mechanisms neutralizing buffer overflows, ROP chain staging, and unauthorized memory manipulations.
 
 ### Strict Write XOR Execute (`strict_wx`)
 
 > [!IMPORTANT]
-> This is an OPT-IN module.
+> This is an OPT-IN module configured via extended attributes.
 
-This module stops shellcode injection and in-memory staging by enforcing a simple rule: memory pages can never be writable and executable at the same time.
-
-* **eBPF Hooks:** `lsm/file_mprotect`, `lsm/mmap_file`.
-
-* **How it works:** System administrators can tag compiled binaries with the `user.bouclier.strict_wx` extended attribute. The module tracks these via a hardware-backed map. The module then blocks any memory allocations requesting `PROT_WRITE | PROT_EXEC`. It also blocks sequential bypasses, like trying to make a writable page executable after the fact. This strict protection automatically applies to any `.so` shared libraries mapped into the protected binary's memory.
+This module stops shellcode injection and in-memory staging by enforcing a strict policy: memory pages can never be simultaneously writable and executable. Operating on `lsm/file_mprotect` and `lsm/mmap_file`, administrators can tag compiled binaries with the `user.bouclier.strict_wx` extended attribute, which the module indexes via a hardware-backed map. The engine then intercepts memory allocations, blocking any requests for `PROT_WRITE | PROT_EXEC` as well as sequential bypass attempts (e.g., attempting to make a writable page executable after initial allocation). This protection automatically extends to any .so shared libraries mapped into the protected binary's memory space.
 
 ### Process Injection & Credential Dumping Prevention (`ptrace_block`)
 
-Hardens the Linux `ptrace` capability boundary. It restricts unprivileged processes from attaching to foreign processes to execute hollow process injection and enforces a strict, hardware-backed ring-fence around critical system daemons to prevent memory scraping.
+This module hardens the Linux `ptrace` boundary using `lsm/ptrace_access_check` and `lsm/ptrace_traceme`.
 
-* **eBPF Hooks:** `lsm/ptrace_access_check`, `lsm/ptrace_traceme`.
+To prevent credential dumping, it establishes an immutable, hardware-backed ring-fence around critical authentication daemons (e.g., `sshd`, `sudo`, `gnome-keyring-daemon`), instantly blocking unauthorized memory reads (`PTRACE_MODE_READ`). To mitigate process injection, it evaluates the true global UID (`get_global_uid()`), bypassing container namespace mappings where a local process might falsely appear as root, universally blocking unprivileged cross-process attachments. Additionally, it prevents hollow process injection by isolating `PTRACE_TRACEME` requests, denying unprivileged parent processes the ability to authorize trace actions on their children to stage dynamic shellcode.
 
-* **Credential Dumping Prevention:** Attackers often attempt to read the memory (`PTRACE_MODE_READ`) of password managers or authentication daemons (e.g., `sshd`, `sudo`, `gnome-keyring-daemon`). This module resolves the physical `inode` and device ID of these critical binaries at boot to create an immutable watchlist.
+### Unprivileged Dump Restriction (`dump_restrict`)
 
-* **Process Injection Mitigator:** By evaluating the true global UID (`get_global_uid()`), the module bypasses container or namespace mappings where a local process might falsely appear as root. Unprivileged cross-process attachment (`PTRACE_MODE_ATTACH`) is universally blocked.
+Hardens the system against advanced memory corruption exploits. Attackers routinely crash worker threads intentionally to force the kernel to write a core dump, leaking memory layouts to bypass ASLR or exposing plaintext credentials left in memory. This module deploys a multi-layered defense utilizing `lsm/file_open`, `lsm/task_prctl`, `kprobe/call_usermodehelper_setup`, and `lsm/bprm_check_security`.
 
-* **Hollow Process Prevention:** Process hollowing relies heavily on the `PTRACE_TRACEME` call. The `lsm/ptrace_traceme` hook isolates and prevents unprivileged parent processes from authorizing trace actions on their children, neutralizing dynamic shellcode staging.
+When a standard crash occurs, the kernel elevates the thread's flags to include `PF_DUMPCORE`. By intercepting file_open, the module cleanly blocks the creation of physical core files on disk for unprivileged processes. It also prevents state tampering by intercepting `prctl()` to deny unprivileged processes from re-enabling `PR_SET_DUMPABLE`.
 
-## Unprivileged Dump Restriction (`dump_restrict`)
+Crucially, it utilizes a temporal Two-Hook Architecture to intercept piped core dumps routed to user-mode helpers (e.g., `systemd-coredump`), which otherwise obscure the attacker's identity via asynchronous root `kworker` threads:
 
-Hardens the system against advanced memory corruption exploits. Attackers routinely crash worker threads intentionally to force the kernel to write a core dump, leaking memory layouts to bypass ASLR and construct ROP chains, or exposing plaintext credentials left in memory.
+- Observer Phase (`kprobe/call_usermodehelper_setup`): Intercepts the helper preparation API within the crashing thread's context, extracting the pristine, unprivileged UID/PID and securely stashing it into an atomic eBPF map "lockbox".
 
-* **eBPF Hooks:** `lsm/file_open`, `lsm/task_prctl`.
+- Enforcement Phase (`lsm/bprm_check_security`): Evaluates the root `kworker` as it attempts to execute the core handler binary. It validates the handler's physical hardware footprint to prevent spoofing and cross-references the temporal lockbox. If the crash originated from an unprivileged user, it safely intercepts the execution (`-EPERM`), short-circuiting the pipeline while natively allowing legitimate administrative root crashes.
 
-* **Core Dump File Write Interception:** When a process crashes (e.g., via SIGSEGV), the kernel attempts to generate a core dump and elevates the crashing thread's flags to include `PF_DUMPCORE`. By intercepting `file_open` and checking this flag, the module cleanly blocks the kernel from creating the core file on disk for any unprivileged process. This neutralizes the ASLR leak without causing a kernel panic.
+## IV. Execution Control & Attack Surface Reduction
 
-* **State Tampering Prevention:** Attackers with initial code execution might attempt to bypass system defaults by re-enabling core dumping via `prctl()` prior to intentionally crashing. The `lsm/task_prctl` hook intercepts this syscall and strictly denies unprivileged processes from setting `PR_SET_DUMPABLE` to true, acting as a robust defense-in-depth layer.
+Policies restricting initial access vectors, dropper execution, and payload staging.
+
+### Untrusted Path Execution Prevention (`exec_block`)
+
+Utilizing the `lsm/bprm_check_security` hook, this module neutralizes memory corruption exploits and web-shell droppers attempting to execute secondary payloads out of historically insecure, world-writable directories (e.g., `/tmp`, `/dev/shm`). Validation is performed strictly against underlying dentry cache hardware IDs to bypass namespace manipulation. Furthermore, it combats fileless malware by detecting memory-backed payloads (`memfd_create`) or nameless temporary files (`O_TMPFILE`) possessing a VFS link count (`i_nlink`) of zero. If a fileless execution attempt is detected, the engine demands that the memory segment be completely immutable (`F_SEAL_WRITE`), blocking the execution if the segment remains unsealed.
+
+### Removable Media Neutralizer (`mount_secure`)
+
+Prevents physical USB drops or rogue SD cards from executing binaries or establishing privilege escalation footholds. By intercepting both `lsm/sb_mount` (legacy) and `lsm/move_mount` (modern util-linux APIs) operations, the module inspects block device prefixes (such as `/dev/sd*` or `/dev/mmcblk*`) targeting common mount directories. Upon a match, it dynamically enforces the `MS_NOEXEC`, `MS_NOSUID`, and `MS_NODEV` flags, guaranteeing the removable media remains inert regardless of the arbitrary filesystem format utilized by an attacker.
+
+## V. Privilege Escalation & Container Security
+
+Safeguards against nested namespace abuse and host-level boundary violations.
 
 ### Namespace Escape Monitor (`userns_restrict`)
 
-Provides a layer of defense against container escape vulnerabilities (e.g., Dirty Pipe, runc exploits). It neutralizes unprivileged processes attempting to create isolated user namespaces, and sandboxed processes (like Docker or Flatpak) attempting to acquire host-level privileges or mount physical devices.
+Provides a robust layer of defense against container escape vulnerabilities (e.g., Dirty Pipe, runc exploits) by monitoring `lsm/userns_create`, `lsm/capable`, and `lsm/sb_mount`.
 
-* **eBPF Hooks:** `lsm/userns_create`, `lsm/capable`, `lsm/sb_mount`.
-
-* **Unprivileged Namespace Creation Block:** Attackers frequently exploit unprivileged user namespace creation as the first step for staging kernel vulnerabilities (like utilizing Dirty Pipe or `nf_tables` bugs). By evaluating the true global UID (`get_global_uid()`), we block `unshare(CLONE_NEWUSER)` for all unprivileged tasks directly at the LSM boundary.
-
-* **Restricted Capability Abuse (Container Escape):** Even if an attacker compromises a process inside a legitimate container, gaining `CAP_SYS_ADMIN` inside that nested namespace allows them to mount filesystems and transition to full host compromise. The module evaluates the user namespace depth (level > 0) and strictly blocks `CAP_SYS_ADMIN` requests originating from nested sandboxes.
-
-* **Host /dev Mounting Mitigation:** If an attacker gains limited execution in a container, attempting to mount the host's physical `/dev` or establish a `devtmpfs` block device is a primary vector to directly tamper with the host kernel's physical disks or memory blocks. The module inspects mount operations within nested namespaces and instantly denies these actions.
+Because attackers frequently exploit unprivileged user namespaces as a staging ground for kernel vulnerabilities, the module evaluates the true global UID to block `unshare(CLONE_NEWUSER)` for all unprivileged tasks. If an attacker compromises a legitimate nested container (like Docker or Flatpak), the module prevents them from acquiring host-level privileges by evaluating the user namespace depth and strictly denying `CAP_SYS_ADMIN` requests originating from sandboxes. Finally, it mitigates host `/dev` mounts by instantly denying nested processes from mapping physical block devices or establishing `devtmpfs` environments, neutralizing direct host tampering.
 
 ---
 
@@ -123,7 +106,5 @@ Provides a layer of defense against container escape vulnerabilities (e.g., Dirt
 `Bouclier Bleu` is in active development. The following heuristics are planned for near-term releases:
 
 * **Userfaultfd Confinement (`uffd_restrict`)** : Mitigates advanced heap-grooming and Use-After-Free (UAF) exploits. It severely restricts user-space page fault handling by globally denying access to `userfaultfd`, explicitly whitelisting only architecturally necessary processes (like QEMU/KVM).
-
-* **Namespace Escape Monitor (`userns_restrict`)** : Provides a robust layer of defense against container escape vulnerabilities (e.g., Dirty Pipe, runc exploits). By hooking `bpf_lsm_userns_create`, `cap_capable`, and `bpf_lsm_sb_mount`, it instantly neutralizes processes inside restricted namespaces (Docker, Flatpak) that attempt to request `CAP_SYS_ADMIN` or mount the host's `/dev`.
 
 * **Asynchronous I/O Confinement (`uring_restrict`)** : Disarms high-speed ransomware encryption phases. It hooks into `uring_setup` to restrict the instantiation of `io_uring` rings exclusively to a dynamic whitelist of high-performance binaries (e.g., Nginx, PostgreSQL), forcing dropped payloads to use slow, synchronous I/O.

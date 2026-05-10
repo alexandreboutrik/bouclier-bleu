@@ -4,41 +4,80 @@
 # This configuration file dictates the initial enforcement state of the EDR 
 # upon daemon startup.
 #
-# For a comprehensive list of all available defense modules, their eBPF 
-# hook points, and technical specifications, please consult: docs/MODULES.md
+# Modules explicitly set to 'false' are loaded into the eBPF subsystem but
+# remain architecturally dormant (executing a zero-cost fast-path) until
+# dynamically invoked via the Control Plane IPC.
+#
+# Reference: docs/MODULES.md for detailed cryptographic and heuristic schemas.
 # =============================================================================
 
 [modules]
-# -----------------------------------------------------------------------------
-# Module Activation Registry
-# -----------------------------------------------------------------------------
-# Define which security modules are actively enforcing at boot. 
-#
-# Any module omitted from this list (or explicitly set to 'false') is safely 
-# loaded into kernel memory but remains completely dormant. Dormant modules 
-# utilize an eBPF fast-path (returning 0) to bypass logic evaluation entirely 
-# until they are dynamically enabled via the Control Plane CLI.
 
-# Self-Defense Architecture (Protects EDR configuration and binaries)
+# -----------------------------------------------------------------------------
+# I. Core System Self-Defense
+# -----------------------------------------------------------------------------
+# Tamper-protection for the Bouclier Bleu architecture and host kernel
+# integrity.
+
+# Self-Defense Architecture
+# Enforces immutable access policies over EDR configuration, binaries, and
+# kernel syslog.
 shield = true
 
-# Untrusted Path Execution Prevention (Blocks execution from /tmp, /dev/shm)
-exec_block = true
+# -----------------------------------------------------------------------------
+# II. Ransomware & Filesystem Integrity
+# -----------------------------------------------------------------------------
+# Heuristics designed to detect and intercept unauthorized mass-encryption
+# events and destructive filesystem operations.
 
-# Removable Media Neutralizer (Enforces MS_NOEXEC/MS_NOSUID on external mounts)
-mount_secure = true
-
-# Ransomware Rename Entropy Monitor (Analyzes filesystem encryption patterns)
+# Ransomware Rename Entropy Monitor
+# Analyzes Shannon entropy of filesystem rename operations to intercept
+# encryption.
 # rename_entropy = false
 
-# Strict Write XOR Execute (W^X) (Prevents in-memory shellcode staging)
+# -----------------------------------------------------------------------------
+# III. Memory Corruption & Exploit Mitigation
+# -----------------------------------------------------------------------------
+# Defense-in-depth mechanisms neutralizing buffer overflows, ROP chain staging,
+# and unauthorized memory manipulations.
+
+# Strict Write XOR Execute (W^X)
+# Mitigates in-memory shellcode staging by preventing concurrent W/X page
+# permissions.
 # strict_wx = false
 
-# Process Injection & Credential Dumping Prevention (Restricts ptrace attach and memory scraping)
+# Process Injection & Credential Dumping Prevention
+# Restricts unauthorized ptrace attachment, hollow process injection, and
+# memory scraping.
 # ptrace_block = false
 
-# Namespace Escape Monitor (Prevents container escapes and nested priv. escalation)
-# userns_restrict = false
-
-# Unprivileged Dump Restriction (Prevents core dump generation for ASLR bypasses)
+# Unprivileged Dump Restriction
+# Neutralizes ASLR bypass vectors by preventing unprivileged processes from
+# forcing core dumps.
 # dump_restrict = false
+
+# -----------------------------------------------------------------------------
+# IV. Execution Control & Attack Surface Reduction
+# -----------------------------------------------------------------------------
+# Policies restricting initial access vectors, dropper execution, and payload
+# staging.
+
+# Untrusted Path Execution Prevention
+# Blocks binary execution from volatile or world-writable directories (e.g.,
+# /tmp, /dev/shm).
+exec_block = true
+
+# Removable Media Neutralizer
+# Enforces MS_NOEXEC and MS_NOSUID attributes globally on external storage
+# mounts.
+mount_secure = true
+
+# -----------------------------------------------------------------------------
+# V. Privilege Escalation & Container Security
+# -----------------------------------------------------------------------------
+# Safeguards against nested namespace abuse and host-level boundary violations.
+
+# Namespace Escape Monitor
+# Prevents unprivileged user namespace creation and restricts CAP_SYS_ADMIN
+# inside containers.
+# userns_restrict = false
