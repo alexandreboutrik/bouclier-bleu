@@ -429,10 +429,14 @@ function update_aur() {
 
 	docker run --rm -v "$(pwd):/aur" archlinux:base-devel bash -c "
         set -e
+        ORIG_UID=\$(stat -c '%u' /aur)
+        ORIG_GID=\$(stat -c '%g' /aur)
+
         useradd -m builder || exit 1
         chown -R builder:builder /aur || exit 1
         sudo -u builder bash -c 'cd /aur && makepkg --printsrcinfo > .SRCINFO' || exit 1
-        chown -R ${HOST_UID}:${HOST_GID} /aur || exit 1
+
+		chown -R \$ORIG_UID:\$ORIG_GID /aur || exit 1
     " || {
 		echo "Failed to generate .SRCINFO via Docker. Exiting."
 		exit 1
@@ -487,10 +491,14 @@ function update_gentoo() {
 
 	docker run --rm -v "$(pwd):/overlay" gentoo/stage3 bash -c "
         set -e
+		ORIG_UID=\$(stat -c '%u' /overlay)
+        ORIG_GID=\$(stat -c '%g' /overlay)
+
         cd /overlay || exit 1
         wget ${TARBALL_URL} -O /var/cache/distfiles/${APP_NAME}-${BB_VERSION}.tar.gz || true
         ebuild ${APP_NAME}-${BB_VERSION}.ebuild manifest || exit 1
-        chown -R ${HOST_UID}:${HOST_GID} /overlay || exit 1
+
+		chown -R \$ORIG_UID:\$ORIG_GID /aur || exit 1
     " || {
 		echo "Failed to generate Gentoo manifest via Docker. Exiting."
 		exit 1
