@@ -66,19 +66,20 @@ struct dump_alert {
 };
 
 /**
- * pending_crash_blocks - State Tracking Intermediary Map
+ * pending_crash_blocks - State Tracking Queue
  *
- * A single-element Array map serving as an atomic lockbox between the
- * unprivileged crashing thread and the asynchronous root `kworker` thread.
- * Because piped handlers execute in a root context, the original attacker's
- * identity is lost by the time the execution hook fires. This map acts as a
- * temporal bridge, allowing pristine telemetry to cross the context gap.
+ * A native eBPF Queue utilized as an atomic, temporal lockbox between the
+ * synchronous observer hook and the asynchronous enforcement hook.
+ * By utilizing a BPF_MAP_TYPE_QUEUE, the observer can safely push multiple
+ * pristine telemetry tokens (capturing the unprivileged attacker's original
+ * UID and PID) onto a stack during concurrent crash events. This prevents
+ * overwrite races and guarantees absolute 1:1 event matching when the root
+ * kworker thread subsequently spawns the handler and pops the token.
  */
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__type(key, __u32);
+	__uint(type, BPF_MAP_TYPE_QUEUE);
 	__type(value, struct dump_alert);
-	__uint(max_entries, 1);
+	__uint(max_entries, 512);
 } pending_crash_blocks SEC(".maps");
 
 BOUCLIER_MODULE_ALERTS;
@@ -180,7 +181,7 @@ SEC("lsm/task_prctl")
 int BPF_PROG(dump_restrict_task_prctl, int option, unsigned long arg2,
 			 unsigned long arg3, unsigned long arg4, unsigned long arg5) {
 	if (!is_module_active(&state_map)) {
-		return -ENOSYS;
+		return 0;
 	}
 
 	/*
@@ -201,7 +202,7 @@ int BPF_PROG(dump_restrict_task_prctl, int option, unsigned long arg2,
 		}
 	}
 
-	return -ENOSYS;
+	return 0;
 }
 
 /*
@@ -254,11 +255,12 @@ int BPF_KPROBE(dump_restrict_observer) {
 	payload.comm[sizeof(payload.comm) - 1] = '\0';
 
 	/*
-	 * Stash the context into the temporal lockbox for the Enforcement hook
-	 * (`bprm_check_security`) to consume when the kworker spawns the handler.
+	 * Temporal Lockbox: Push
+	 * We atomically push the attacker's true UID/PID onto the queue for the
+	 * Enforcement hook (bprm_check_security) to consume when the kworser
+	 * spawns the handler.
 	 */
-	__u32 key = 0;
-	bpf_map_update_elem(&pending_crash_blocks, &key, &payload, BPF_ANY);
+	bpf_map_push_elem(&pending_crash_blocks, &payload, BPF_ANY);
 
 	return 0;
 }
@@ -317,35 +319,36 @@ int BPF_PROG(dump_restrict_bprm_check, struct linux_binprm *bprm) {
 	__u8 *is_handler = bpf_map_lookup_elem(&protected_files, &bin_id);
 	if (is_handler && *is_handler == 1) {
 
-		__u32 key = 0;
-		struct dump_alert *payload =
-			bpf_map_lookup_elem(&pending_crash_blocks, &key);
+		struct dump_alert payload = {};
 
 		/*
-		 * If a payload exists and the PID is non-zero, this execution was
-		 * triggered by the unprivileged crash we observed milliseconds ago.
+		 * Temporal Lockbox: Atomic Pop & Consume
+		 * `bpf_map_pop_elem` is inherently atomic. It extracts the oldest
+		 * token and removes it from the queue simultaneously. If it returns 0
+		 * (success), we are guaranteed that this kworker execution corresponds
+		 * to a malicious unprivileged crash, and the token is safely destroyed
+		 * to prevent double-counting.
 		 */
-		if (payload && payload->pid != 0) {
+		if (bpf_map_pop_elem(&pending_crash_blocks, &payload) == 0) {
 
-			// Dispatch the pristine telemetry stashed by the Observer hook
-			struct dump_alert *event =
-				bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
-			if (event) {
-				__builtin_memcpy(event, payload, sizeof(*event));
-				bpf_ringbuf_submit(event, 0);
+			if (payload.pid != 0) {
+
+				// Dispatch the pristine telemetry captured by the observer
+				struct dump_alert *event =
+					bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
+				if (event) {
+					__builtin_memcpy(event, &payload, sizeof(*event));
+					bpf_ringbuf_submit(event, 0);
+				}
+
+				return -EPERM;
 			}
-
-			// Consume the token (Reset the map state to 0)
-			struct dump_alert empty = {};
-			bpf_map_update_elem(&pending_crash_blocks, &key, &empty, BPF_ANY);
-
-			return -EPERM;
 		}
 
 		/*
-		 * If payload->pid == 0, the map was empty. This means the kprobe
-		 * ignored the crash because it originated from an administrative Root
-		 * process.
+		 * If the pop fails (map is empty), the crash was initiated by an
+		 * authorized root process which the Observer hook intentionally
+		 * ignored.
 		 */
 		return 0;
 	}
