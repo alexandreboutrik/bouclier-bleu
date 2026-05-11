@@ -277,12 +277,20 @@ int BPF_PROG(ptrace_block_file_open, struct file *file) {
 		return 0;
 	}
 
+	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+	if (!dentry) {
+		return 0;
+	}
+
 	/*
-	 * Fast-Path: Read-only access is ignored.
-	 * We are specifically hunting for memory corruption and injection.
+	 * Fast-Path: Filename Length
+	 * We are looking exclusively for the file "mem". By checking if the
+	 * filename length is exactly 3 bytes, we instantly filter out ~99.9% of
+	 * all file open operations system-wide with a single integer comparison,
+	 * completely avoiding heavy string copies.
 	 */
-	unsigned int f_flags = BPF_CORE_READ(file, f_flags);
-	if ((f_flags & O_ACCMODE) == O_RDONLY) {
+	__u32 name_len = BPF_CORE_READ(dentry, d_name.len);
+	if (name_len != 3) {
 		return 0;
 	}
 
