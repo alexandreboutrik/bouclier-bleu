@@ -82,9 +82,9 @@ struct madvise_tracker {
  * madvise_tracking_map - Temporal Lockbox
  *
  * Uses an LRU (Least Recently Used) Hash Map to track madvise frequency per
- * thread. Utilizing an LRU map natively prevents map exhaustion (fail-open)
- * attacks where an adversary might spawn thousands of dummy threads strictly
- * to fill the BPF map before executing the real exploit. Old, inactive thread
+ * process (TGID). Utilizing an LRU map natively prevents map exhaustion
+ * attacks where an adversary might spawn thousands of dummy processes strictly
+ * to fill the BPF map before executing the real exploit. Old, inactive process
  * entries are automatically evicted.
  */
 struct {
@@ -134,70 +134,69 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 	__u64 now = bpf_ktime_get_ns();
 
 	/*
-	 * Lock-Free Concurrency Optimization
-	 * By explicitly tracking the Thread ID (TID) rather than the parent
-	 * Process ID (TGID), we eliminate the need for expensive atomic
-	 * `__sync_add_and_fetch` operations. A single thread can mathematically
-	 * only execute one syscall at any given time, ensuring perfectly race-free
-	 * map updates.
+	 * Process-Wide Tracking (TGID)
+	 * Tracking by Process ID (TGID) instead of Thread ID (TID) prevents
+	 * evasion techniques where an adversary distributes madvise calls across
+	 * many threads to keep individual counters below the detection threshold.
 	 */
-	struct madvise_tracker *state =
-		bpf_map_lookup_elem(&madvise_tracking_map, &tid);
+	struct madvise_tracker *state_ptr =
+		bpf_map_lookup_elem(&madvise_tracking_map, &pid);
 
-	if (!state) {
-		struct madvise_tracker init_state = {};
+	struct madvise_tracker init_state = {};
+
+	if (!state_ptr) {
 		init_state.window_start = now;
 		init_state.count = 1;
 
-		bpf_map_update_elem(&madvise_tracking_map, &tid, &init_state, BPF_ANY);
+		bpf_map_update_elem(&madvise_tracking_map, &pid, &init_state, BPF_ANY);
 		return 0;
 	}
 
 	/*
 	 * Temporal Boundary Validation
-	 * If the current timestamp has safely exceeded the rolling window limit,
-	 * reset the tracker block for this thread.
+	 * Read directly from the map pointer. If the window expired, reset the
+	 * tracker block. Standard assignment is used over atomic swaps to prevent
+	 * LLVM backend crashes on older eBPF targets. The micro-race condition is
+	 * acceptable for a 10,000 threshold heuristic.
 	 */
-	if (now - state->window_start > RATELIMIT_WINDOW_NS) {
-		state->window_start = now;
-		state->count = 1;
+	if (now - state_ptr->window_start > RATELIMIT_WINDOW_NS) {
+		state_ptr->window_start = now;
+		state_ptr->count = 1;
 		return 0;
 	}
 
-	state->count++;
+	/*
+	 * Concurrency-Safe Increment
+	 * Because multiple threads share the same PID tracker, we must use an
+	 * atomic increment directly on the map pointer to prevent lost updates
+	 * during a multi-threaded race condition attack.
+	 */
+	__sync_fetch_and_add(&state_ptr->count, 1);
+	__u64 current_count = state_ptr->count;
 
 	/*
 	 * Enforcement & Telemetry
-	 * If the thread aggressively exceeds the statistical threshold, we isolate
-	 * and terminate it instantly.
 	 */
-	if (state->count > RATELIMIT_THRESHOLD) {
+	if (current_count > RATELIMIT_THRESHOLD) {
 
 		/*
 		 * Immediate Neutralization
-		 * Issuing SIGKILL (9) directly from kernel-space ensures the thread
-		 * is terminated the exact microsecond it exits the syscall context,
-		 * breaking the race condition cycle definitively.
+		 * Because this hook relies on a raw tracepoint (which cannot legally
+		 * return a blocking denial code like -EPERM to userspace), we must
+		 * rely on bpf_send_signal(9) to definitively break the race condition
+		 * loop.
 		 */
 		long sig_result = bpf_send_signal(9);
-		if (sig_result < 0) {
-			bpf_printk("Bouclier Bleu [ERROR]: SIGKILL delivery failed "
-					   "(%ld).\n",
-					   sig_result);
-		} else {
-			bpf_printk("Bouclier Bleu [BLOCK]: Race condition anomaly "
-					   "detected. Killing PID %d.\n",
-					   pid);
-		}
 
 		/*
 		 * Telemetry Event Flooding Prevention
-		 * Once the kill signal is successfully dispatched, we reset the
-		 * counter back to 0. If the thread manages to execute a few lingering
-		 * instructions before the kernel reaps it, this guarantees we don't
-		 * blindly spam the userland ringbuffer with duplicate SIEM alerts.
+		 * Only reset the flood counter if we successfully neutralized the
+		 * threat. If the kill failed, we want the telemetry to keep firing so
+		 * the user-space daemon knows the threat is still active.
 		 */
-		state->count = 0;
+		if (sig_result == 0) {
+			state_ptr->count = 0;
+		}
 
 		struct madvise_alert *event =
 			bpf_ringbuf_reserve(&alerts, sizeof(*event), 0);
@@ -207,7 +206,7 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 
 			event->pid = pid;
 			event->tid = tid;
-			event->count = RATELIMIT_THRESHOLD;
+			event->count = (__u32)current_count;
 			event->action_type = ACTION_MADVISE_SPAM;
 
 			/* Memory-Boundary Safe String Extraction */
