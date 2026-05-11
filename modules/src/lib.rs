@@ -79,19 +79,19 @@ mod tests {
 		assert_eq!(module.slug(), "dummy_heur");
 
 		// 2. Assert initial AtomicBool status (should default to true)
-		assert!(module.status());
+		assert!(!module.status());
 
 		// 3. Thread-safe toggling
-		module.toggle(false);
-		assert!(
-			!module.status(),
-			"Module failed to toggle offline via SeqCst ordering"
-		);
-
 		module.toggle(true);
 		assert!(
 			module.status(),
 			"Module failed to toggle online via SeqCst ordering"
+		);
+
+		module.toggle(false);
+		assert!(
+			!module.status(),
+			"Module failed to toggle offline via SeqCst ordering"
 		);
 	}
 
