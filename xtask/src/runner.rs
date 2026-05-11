@@ -60,9 +60,52 @@ pub fn run_tests(
 
 	let mut execute_suite = |cat: &str, target: Option<&str>| -> TaskResult<()> {
 		let (res, time) = match cat {
-			"unit" => run_test_suite("Unit", "unit", "rs", target, |_, _| {
-				"cargo test -q --release --lib".to_string()
-			})?,
+			"unit" => {
+				/*
+				 * Inline Unit Test Execution
+				 * Unlike component/integration tests, Rust unit tests live inline
+				 * within the `src/` directories. We bypass `run_test_suite`'s
+				 * directory iteration and invoke a singular, workspace-wide cargo
+				 * test command.
+				 */
+				println!("\n[INFO] Executing Inline Unit Tests...");
+				println!("[INFO] Reverting environment to clean state for Unit Tests...");
+				let restore_time = restore_vm_snapshot()?;
+
+				let target_filter = target.unwrap_or("");
+				let cmd = format!(
+					"cargo test -q --release --workspace --lib {}",
+					target_filter
+				);
+
+				let start_time = Instant::now();
+				let result = incus_exec(&cmd);
+				let passed = result.is_ok();
+				let elapsed = start_time.elapsed();
+
+				let display_name = if target_filter.is_empty() {
+					"Workspace Unit Tests".to_string()
+				} else {
+					format!("Unit Filter: {}", target_filter)
+				};
+
+				if let Err(err) = result {
+					eprintln!("\n[ERROR] Unit test suite failed.");
+					eprintln!("{}", err);
+				} else {
+					println!("[SUCCESS] Passed: {}", display_name);
+				}
+
+				(
+					vec![TestRecord {
+						name: display_name,
+						category: "unit".to_string(),
+						duration: elapsed,
+						passed,
+					}],
+					restore_time,
+				)
+			}
 			"component" => run_test_suite(
 				"Component (eBPF Defenses)",
 				"component",
