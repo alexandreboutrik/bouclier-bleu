@@ -56,6 +56,11 @@ shield = true
 # forcing core dumps.
 # dump_restrict = false
 
+# Memory Advisory Race Condition Mitigator
+# Neutralizes Use-After-Free and Copy-on-Write race conditions by intercepting
+# abnormal memory advisory spam.
+# madvise_ratelimit = false
+
 # -----------------------------------------------------------------------------
 # IV. Execution Control & Attack Surface Reduction
 # -----------------------------------------------------------------------------
