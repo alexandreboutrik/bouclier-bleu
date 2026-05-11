@@ -162,11 +162,11 @@ function gather_static_metrics() {
 			local cat_dir="${TESTS_DIR}/${category}"
 			if [ -d "${cat_dir}" ]; then
 				local count=0
-				
+
 				# Count .rs files
 				local rs_count
 				rs_count=$(find "${cat_dir}" -type f -name '*.rs' 2>/dev/null | wc -l | tr -d ' ')
-				
+
 				# Count all verify_* functions, but ignore
 				# verify_ipc_detachment
 				local sh_count
@@ -177,13 +177,13 @@ function gather_static_metrics() {
 				# filename. If it's found, the variable won't be empty.
 				local has_detachment
 				has_detachment=$(find "${cat_dir}" -type f -name '*.sh' -exec grep -lE '^(function\s+)?verify_ipc_detachment\s*\(\)' {} + 2>/dev/null | head -n 1)
-				
+
 				if [ -n "${has_detachment}" ]; then
 					sh_count=$((sh_count + 1))
 				fi
 
 				count=$((rs_count + sh_count))
-				
+
 				TESTS_COUNT=$((TESTS_COUNT + count))
 				if [ "${count}" -gt 0 ]; then
 					TESTS_DETAILS="${TESTS_DETAILS}\n      - ${category}: ${count}"
