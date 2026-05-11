@@ -9,21 +9,21 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **26 eBPF hooks**, driving **8 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **72 automated tests**, encompassing 19 unit, 47 component, 3 integration, and 3 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **27 eBPF hooks**, driving **8 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **73 automated tests**, encompassing 19 unit, 48 component, 3 integration, and 3 benchmark validation pipelines.
 
 ### Memory Footprint
 
-The system maintains a highly optimized memory footprint totaling approximately **18,003 kB (~18 MB)** during active enforcement:
+The system maintains a highly optimized memory footprint totaling approximately **18,181 kB (~18 MB)** during active enforcement:
 
-- Userland Engine: 13,548 kB
-- eBPF Maps (Kernel Memory): 4,455 kB (total)
+- Userland Engine: 13,712 kB
+- eBPF Maps (Kernel Memory): 4,469 kB (total)
     - rename_entropy: 1,555 kB
     - exec_block: 1,007 kB
     - strict_wx: 447 kB
     - shield: 304 kB
     - mount_secure: 302 kB
     - ptrace_block: 293 kB
-    - dump_restrict: 273 kB
+    - dump_restrict: 287 kB
     - userns_restrict: 270 kB
 
 ---
@@ -61,9 +61,15 @@ This module stops shellcode injection and in-memory staging by enforcing a stric
 
 ### Process Injection & Credential Dumping Prevention (`ptrace_block`)
 
-This module hardens the Linux `ptrace` boundary using `lsm/ptrace_access_check` and `lsm/ptrace_traceme`.
+This module hardens the Linux `ptrace` and memory manipulation boundary using the `lsm/ptrace_access_check`, `lsm/ptrace_traceme` and `lsm/file_open` hooks.
 
-To prevent credential dumping, it establishes an immutable, hardware-backed ring-fence around critical authentication daemons (e.g., `sshd`, `sudo`, `gnome-keyring-daemon`), instantly blocking unauthorized memory reads (`PTRACE_MODE_READ`). To mitigate process injection, it evaluates the true global UID (`get_global_uid()`), bypassing container namespace mappings where a local process might falsely appear as root, universally blocking unprivileged cross-process attachments. Additionally, it prevents hollow process injection by isolating `PTRACE_TRACEME` requests, denying unprivileged parent processes the ability to authorize trace actions on their children to stage dynamic shellcode.
+To prevent credential dumping, it establishes an immutable, hardware-backed ring-fence around critical authentication daemons (e.g., `sshd`, `sudo`, `gnome-keyring-daemon`), instantly blocking unauthorized memory reads (`PTRACE_MODE_READ`).
+
+To mitigate process injection, it evaluates the true global UID (`get_global_uid()`), bypassing container namespace mappings where a local process might falsely appear as root, universally blocking unprivileged cross-process attachments.
+
+Additionally, it prevents hollow process injection by isolating `PTRACE_TRACEME` requests, denying unprivileged parent processes the ability to authorize trace actions on their children to stage dynamic shellcode.
+
+Finally, it neutralizes VFS-based memory tampering by strictly blocking unprivileged writes to `/proc/*/mem`, effectively stopping advanced privilege escalation exploits and stealth injectors that bypass traditional hooks.
 
 ### Unprivileged Dump Restriction (`dump_restrict`)
 

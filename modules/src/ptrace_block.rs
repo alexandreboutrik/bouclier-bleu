@@ -72,6 +72,7 @@ impl PtraceAlert {
 // Telemetry action identifiers bridging the kernel BPF definitions.
 const ACTION_CRED_DUMP: u32 = 1;
 const ACTION_INJECTION: u32 = 2;
+const ACTION_PROC_MEM: u32 = 3;
 
 /*
  * Defense Heuristic : Process Injection & Credential Dumping Prevention
@@ -95,13 +96,19 @@ define_security_module!(
 	 * Memory scraping of password managers or authentication daemons (like
 	 * sshd) via PTRACE_MODE_READ is blocked via the hardware invariant
 	 * watchlist, mimicking Windows LSASS protection on Linux.
+	 *
+	 * T1068 - Exploitation for Privilege Escalation
+	 * Neutralizes direct VFS-based memory writes to /proc/**/mem, stopping
+	 * exploits and advanced stealth injectors that bypass standard ptrace
+	 * hooks.
 	 */
-	mitre: ["T1055", "T1003.008"],
+	mitre: ["T1055", "T1003.008", "T1068"],
 	parser: PtraceAlert::try_from_bytes,
 	handler: |alert: PtraceAlert| {
 		let action_str = match alert.action_type {
 			ACTION_CRED_DUMP => "CREDENTIAL_DUMP",
 			ACTION_INJECTION => "PROCESS_INJECTION",
+			ACTION_PROC_MEM => "PROC_MEM_TAMPER",
 			_ => "UNKNOWN_VIOLATION",
 		};
 

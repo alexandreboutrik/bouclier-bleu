@@ -68,10 +68,12 @@ function provision_env() {
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
 
 int main(int argc, char *argv[]) {
     if (argc < 2) return 1;
 
+    // Standard Ptrace Attachment
     if (strcmp(argv[1], "attach") == 0) {
         if (argc < 3) return 1;
         pid_t target = atoi(argv[2]);
@@ -81,6 +83,7 @@ int main(int argc, char *argv[]) {
         return 0; 
     }
 
+    // Hollow Process / Child Injection Simulation
     if (strcmp(argv[1], "attach_child") == 0) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -102,6 +105,7 @@ int main(int argc, char *argv[]) {
         return ret; 
     }
 
+    // PTRACE_TRACEME Simulation
     if (strcmp(argv[1], "traceme") == 0) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -113,6 +117,14 @@ int main(int argc, char *argv[]) {
             if (WIFEXITED(status)) return WEXITSTATUS(status);
             return 1;
         }
+    }
+
+    // VFS Memory Tampering Simulation (Dirty Cow vector)
+    if (strcmp(argv[1], "proc_mem") == 0) {
+        int fd = open("/proc/self/mem", O_RDWR);
+        if (fd < 0) return 126; 
+        close(fd);
+        return 0;
     }
 
     return 1;
@@ -127,6 +139,7 @@ EOF
 	cp "${PTRACE_TESTER}" "/opt/bb_test_hol"
 	cp "${PTRACE_TESTER}" "/opt/bb_test_root"
 	cp "${PTRACE_TESTER}" "/opt/bb_test_dis"
+	cp "${PTRACE_TESTER}" "/opt/bb_test_vfs"
 }
 
 function verify_cred_dump_protection() {
@@ -216,6 +229,32 @@ function verify_unprivileged_traceme() {
 	echo "  [+] Unprivileged PTRACE_TRACEME successfully vetoed."
 }
 
+function verify_proc_mem_tampering() {
+	echo "  [*] Validating VFS-based Memory Tampering (/proc/self/mem) (Expected: BLOCK)..."
+
+	local baseline
+	baseline=$(wc -l <"${DAEMON_LOG}" 2>/dev/null || echo 0)
+
+	su - "${TEST_USER}" -c "/opt/bb_test_vfs proc_mem" >/dev/null 2>&1
+
+	local passed=0
+	for _ in {1..20}; do
+		# Ensure we triggered a block AND it was specifically our new PROC_MEM_TAMPER heuristic
+		if tail -n +$((baseline + 1)) "${DAEMON_LOG}" 2>/dev/null | grep -q "Bouclier Bleu \[BLOCK\]" && tail -n +$((baseline + 1)) "${DAEMON_LOG}" 2>/dev/null | grep -q "PROC_MEM_TAMPER"; then
+			passed=1
+			break
+		fi
+		sleep 0.2
+	done
+
+	if [[ "${passed}" -eq 0 ]]; then
+		echo "[-] Assertion failed: EDR failed to block unprivileged write to /proc/*/mem!"
+		exit 1
+	fi
+
+	echo "  [+] VFS-based memory tampering successfully vetoed."
+}
+
 function capture_bpf_trace() {
 	if [[ -f /sys/kernel/debug/tracing/trace ]]; then
 		echo "=== eBPF Trace Buffer ==="
@@ -284,6 +323,7 @@ initialize_daemon "ptrace_block"
 verify_cred_dump_protection
 verify_unprivileged_injection
 verify_unprivileged_traceme
+verify_proc_mem_tampering
 # FIXME: verify_privileged_attach_allowed
 verify_ipc_detachment
 

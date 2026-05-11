@@ -39,9 +39,32 @@ char LICENSE[] SEC("license") = "GPL";
 #define PTRACE_MODE_ATTACH 0x02
 #endif
 
+/*
+ * VFS & File Status Flags
+ * Redefined to avoid conflicting macros from <linux/fcntl.h> and
+ * <linux/magic.h> when compiling against the generated vmlinux.h skeleton.
+ */
+#ifndef PROC_SUPER_MAGIC
+#define PROC_SUPER_MAGIC 0x9fa0
+#endif
+
+#ifndef O_ACCMODE
+#define O_ACCMODE 00000003
+#endif
+#ifndef O_RDONLY
+#define O_RDONLY 00000000
+#endif
+#ifndef O_WRONLY
+#define O_WRONLY 00000001
+#endif
+#ifndef O_RDWR
+#define O_RDWR 00000002
+#endif
+
 /* Telemetry Action Identifiers */
 #define ACTION_CRED_DUMP 1
 #define ACTION_INJECTION 2
+#define ACTION_PROC_MEM 3
 
 /**
  * struct ptrace_alert - Telemetry Payload Contract
@@ -236,6 +259,86 @@ int BPF_PROG(ptrace_block_traceme, struct task_struct *parent) {
 		dispatch_ptrace_alert(BPF_CORE_READ(parent, tgid), child,
 							  ACTION_INJECTION);
 		return -EACCES;
+	}
+
+	return 0;
+}
+
+/*
+ * Defense Heuristic : VFS-based Memory Tampering
+ * Advanced exploits (e.g., Dirty Cow) and stealth credential dumpers bypass
+ * ptrace hooks entirely by directly opening /proc/<pid>/mem or /proc/self/mem
+ * via the Virtual File System (VFS). This allows them to map and overwrite
+ * memory spaces utilizing standard file I/O operations (O_RDWR / O_WRONLY).
+ */
+SEC("lsm/file_open")
+int BPF_PROG(ptrace_block_file_open, struct file *file) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
+
+	/*
+	 * Fast-Path: Read-only access is ignored.
+	 * We are specifically hunting for memory corruption and injection.
+	 */
+	unsigned int f_flags = BPF_CORE_READ(file, f_flags);
+	if ((f_flags & O_ACCMODE) == O_RDONLY) {
+		return 0;
+	}
+
+	struct inode *inode = BPF_CORE_READ(file, f_inode);
+	if (!inode) {
+		return 0;
+	}
+
+	/* Validate we are interacting with the proc filesystem */
+	__u32 magic = BPF_CORE_READ(inode, i_sb, s_magic);
+	if (magic != PROC_SUPER_MAGIC) {
+		return 0;
+	}
+
+	/*
+	 * Safely isolate the exact filename being opened.
+	 * BPF_CORE_READ returns a pointer, so we must use bpf_probe_read_kernel
+	 * to copy the string into our BPF stack securely.
+	 */
+	const unsigned char *name_ptr =
+		BPF_CORE_READ(file, f_path.dentry, d_name.name);
+	if (!name_ptr) {
+		return 0;
+	}
+
+	char name[4];
+	if (bpf_probe_read_kernel(name, sizeof(name), name_ptr) < 0) {
+		return 0;
+	}
+
+	/*
+	 * Ensure strict match for the file "mem".
+	 * Validating the null terminator at index 3 prevents false positives
+	 * on unrelated files that just happen to start with "mem" (e.g., "memory").
+	 */
+	if (name[0] == 'm' && name[1] == 'e' && name[2] == 'm' && name[3] == '\0') {
+		__u32 uid = get_global_uid();
+
+		/*
+		 * Unprivileged users have no legitimate reason to establish a write
+		 * handle directly into live process memory via the VFS. This behavior
+		 * is almost exclusively the domain of legitimate root debuggers (like
+		 * gdb) or user-space privilege escalation exploits.
+		 */
+		if (uid != 0) {
+			struct task_struct *current_task = bpf_get_current_task_btf();
+			__u32 tgid = BPF_CORE_READ(current_task, tgid);
+
+			/*
+			 * By passing the current_task as the victim, we accurately
+			 * attribute self-injection (e.g., Dirty Cow opening
+			 * /proc/self/mem) in SIEM telemetry stream.
+			 */
+			dispatch_ptrace_alert(tgid, current_task, ACTION_PROC_MEM);
+			return -EACCES;
+		}
 	}
 
 	return 0;
