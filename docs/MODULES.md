@@ -9,16 +9,17 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **27 eBPF hooks**, driving **8 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **73 automated tests**, encompassing 19 unit, 48 component, 3 integration, and 3 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **28 eBPF hooks**, driving **9 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **76 automated tests**, encompassing 19 unit, 51 component, 3 integration, and 3 benchmark validation pipelines.
 
 ### Memory Footprint
 
-The system maintains a highly optimized memory footprint totaling approximately **18,181 kB (~18 MB)** during active enforcement:
+The system maintains a highly optimized memory footprint totaling approximately **19,764 kB (~19 MB)** during active enforcement:
 
-- Userland Engine: 13,712 kB
-- eBPF Maps (Kernel Memory): 4,469 kB (total)
+- Userland Engine: 14,320 kB
+- eBPF Maps (Kernel Memory): 5,444 kB (total)
     - rename_entropy: 1,555 kB
     - exec_block: 1,007 kB
+    - madvise_ratelimit: 975 kB
     - strict_wx: 447 kB
     - shield: 304 kB
     - mount_secure: 302 kB
@@ -82,6 +83,12 @@ Crucially, it utilizes a temporal Two-Hook Architecture to intercept piped core 
 - Observer Phase (`kprobe/call_usermodehelper_setup`): Intercepts the helper preparation API within the crashing thread's context, extracting the pristine, unprivileged UID/PID and securely stashing it into an atomic eBPF map "lockbox".
 
 - Enforcement Phase (`lsm/bprm_check_security`): Evaluates the root `kworker` as it attempts to execute the core handler binary. It validates the handler's physical hardware footprint to prevent spoofing and cross-references the temporal lockbox. If the crash originated from an unprivileged user, it safely intercepts the execution (`-EPERM`), short-circuiting the pipeline while natively allowing legitimate administrative root crashes.
+
+### Memory Advisory Race Condition Mitigator (`madvise_ratelimit`)
+
+Operating on the `tracepoint/syscalls/sys_enter_madvise` hook, this module neutralizes Use-After-Free and Copy-on-Write race conditions (e.g., Dirty Cow) by intercepting abnormal memory advisory spam. It tracks the frequency of `MADV_DONTNEED` syscalls on a per-thread basis. By solely evaluating the Thread ID rather than the parent process, the engine ensures race-free tracking without the overhead of expensive atomic operations.
+
+When a thread aggressively exceeds a statistical threshold of invocations within a single-second rolling window, the engine identifies the heap-grooming attempt and instantly dispatches a `SIGKILL` directly from kernel-space. This terminates the malicious thread the exact microsecond it exits the syscall context, breaking the exploit cycle before the attacker can successfully win the race condition.
 
 ## IV. Execution Control & Attack Surface Reduction
 

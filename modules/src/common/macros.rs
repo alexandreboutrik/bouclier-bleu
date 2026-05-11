@@ -16,8 +16,8 @@
 
 use crate::common::traits::SecurityModule;
 use crate::{
-	dump_restrict, exec_block, mount_secure, ptrace_block, rename_entropy, shield, strict_wx,
-	userns_restrict,
+	dump_restrict, exec_block, madvise_ratelimit, mount_secure, ptrace_block, rename_entropy,
+	shield, strict_wx, userns_restrict,
 };
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ pub fn build_registry() -> Vec<Arc<dyn SecurityModule + Send + Sync>> {
 		Arc::new(ptrace_block::PtraceBlock::new()),
 		Arc::new(dump_restrict::DumpRestrict::new()),
 		Arc::new(userns_restrict::UsernsRestrict::new()),
+		Arc::new(madvise_ratelimit::MadviseRatelimit::new()),
 		// Future expansions: e.g. Arc::new(ransomware_heur::CanaryDrop::new()),
 	]
 }
