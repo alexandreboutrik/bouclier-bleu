@@ -122,15 +122,6 @@ define_security_module!(
 		caps
 	},
 	init: |provider: &dyn MapProvider| -> Result<(), String> {
-		// Initialize the module state to active
-		// This guarantees `is_module_active` returns true during the initial
-		// boot.
-		let state_map = provider.get_map("state_map")?;
-		let key = 0u32.to_ne_bytes();
-		let val = 1u32.to_ne_bytes();
-		state_map.update(&key, &val, libbpf_rs::MapFlags::ANY)
-			.map_err(|e| format!("Failed to initialize state_map: {}", e))?;
-
 		// Hardware-backed indexing of the piped core dump handler
 		let protected_files = provider.get_map("protected_files")?;
 
