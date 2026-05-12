@@ -162,6 +162,29 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    /* * 7. Outbound Tainted Pipeline (Copy Fail Mitigation)
+     * Splice a read-only file into a pipe, then attempt to splice FROM the tainted pipe to a non-pipe.
+     */
+    if (strcmp(argv[1], "taint_outbound") == 0) {
+        int p[2];
+        if (pipe(p) < 0) return 1;
+        
+        int fd_in = open("/etc/passwd", O_RDONLY);
+        if (fd_in < 0) return 1;
+
+        // Taint the pipe
+        splice(fd_in, NULL, p[1], NULL, 4, 0);
+
+        // Target a non-pipe destination (e.g., /dev/null simulating an AF_ALG socket)
+        int fd_out = open("/dev/null", O_WRONLY);
+        if (fd_out < 0) return 1;
+
+        // Attempt outbound zero-copy mix (Should trigger fatal SIGKILL)
+        splice(p[0], NULL, fd_out, NULL, 4, 0);
+
+        return 0;
+    }
+
     return 1;
 }
 EOF
@@ -294,7 +317,7 @@ function verify_privileged_splice_flags() {
 }
 
 function verify_tainted_pipeline_splice() {
-	echo "  [*] Validating Tainted Pipeline (Splice Isolation) (Expected: BLOCK)..."
+	echo "  [*] Validating Tainted Pipeline (Inbound Splice Isolation) (Expected: BLOCK)..."
 	set +e
 	su - "${TEST_USER}" -c "${TEST_UNAUTH_BIN} taint_splice" >/dev/null 2>&1
 	local exit_code=$?
@@ -308,7 +331,7 @@ function verify_tainted_pipeline_splice() {
 }
 
 function verify_tainted_pipeline_write() {
-	echo "  [*] Validating Tainted Pipeline (Write Isolation) (Expected: BLOCK)..."
+	echo "  [*] Validating Tainted Pipeline (Inbound Write Isolation) (Expected: BLOCK)..."
 	set +e
 	su - "${TEST_USER}" -c "${TEST_UNAUTH_BIN} taint_write" >/dev/null 2>&1
 	local exit_code=$?
@@ -319,6 +342,20 @@ function verify_tainted_pipeline_write() {
 		exit 1
 	fi
 	echo "  [+] Write into TAINTED_READONLY pipeline successfully vetoed (SIGKILL)."
+}
+
+function verify_tainted_pipeline_outbound() {
+	echo "  [*] Validating Tainted Pipeline (Outbound Splice Isolation) (Expected: BLOCK)..."
+	set +e
+	su - "${TEST_USER}" -c "${TEST_UNAUTH_BIN} taint_outbound" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne "${SIGKILL_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: Tainted pipeline successfully spliced OUT to a secondary destination! (Exit code: ${exit_code})"
+		exit 1
+	fi
+	echo "  [+] Outbound splice FROM TAINTED_READONLY pipeline successfully vetoed (SIGKILL)."
 }
 
 function verify_privileged_taint() {
@@ -373,6 +410,7 @@ verify_unprivileged_splice_flags
 verify_privileged_splice_flags
 verify_tainted_pipeline_splice
 verify_tainted_pipeline_write
+verify_tainted_pipeline_outbound
 verify_privileged_taint
 verify_ipc_detachment
 

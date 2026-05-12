@@ -304,6 +304,40 @@ int BPF_KSYSCALL(io_restrict_splice, int fd_in, loff_t *off_in, int fd_out,
 		bool in_is_pipe = S_ISFIFO(in_mode);
 		bool out_is_pipe = S_ISFIFO(out_mode);
 
+		/*
+		 * Invariant : Outbound Taint Verification
+		 * Advanced zero-copy exploits frequently chain multiple splice
+		 * operations to launder a read-only page cache reference through an
+		 * intermediate pipe before delivering it to a secondary execution
+		 * vector (e.g., cryptographic sockets or arbitrary device
+		 * descriptors). We must verify if the SOURCE of the splice is an
+		 * already tainted pipe to prevent the weaponized buffer from escaping
+		 * confinement and triggering the final payload.
+		 */
+		if (in_is_pipe) {
+			void *in_pipe_ptr = BPF_CORE_READ(f_in, private_data);
+			if (in_pipe_ptr) {
+				__u8 *taint =
+					bpf_map_lookup_elem(&pipe_taint_map, &in_pipe_ptr);
+				if (taint && *taint == TAINTED_READONLY) {
+					bpf_send_signal(9);
+					dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
+					bpf_debug_printk(
+						"Bouclier Bleu [BLOCK]: Splice execution "
+						"FROM TAINTED_READONLY pipe neutralized.\n");
+					return 0;
+				}
+			}
+		}
+
+		/*
+		 * Invariant : Inbound Taint Verification
+		 * Resolves raw pointers (avoiding vulnerable string parsing) to
+		 * evaluate the data flow topology. If data is observed flowing from a
+		 * read-only file directly into a pipe, that pipe's physical memory
+		 * address is explicitly marked as TAINTED_READONLY. This establishes
+		 * the foundational anchor of our zero-copy confinement perimeter.
+		 */
 		if (out_is_pipe) {
 			void *pipe_ptr = BPF_CORE_READ(f_out, private_data);
 			if (pipe_ptr) {
