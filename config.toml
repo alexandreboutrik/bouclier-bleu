@@ -77,6 +77,11 @@ exec_block = true
 # mounts.
 mount_secure = true
 
+# I/O Confinement Monitor
+# Restricts advanced asynchronous I/O (io_uring) and zero-copy pipelines 
+# (splice/vmsplice) to neutralize ransomware and privilege escalation.
+# io_restrict = false
+
 # -----------------------------------------------------------------------------
 # V. Privilege Escalation & Container Security
 # -----------------------------------------------------------------------------

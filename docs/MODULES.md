@@ -102,6 +102,15 @@ Utilizing the `lsm/bprm_check_security` hook, this module neutralizes memory cor
 
 Prevents physical USB drops or rogue SD cards from executing binaries or establishing privilege escalation footholds. By intercepting both `lsm/sb_mount` (legacy) and `lsm/move_mount` (modern util-linux APIs) operations, the module inspects block device prefixes (such as `/dev/sd*` or `/dev/mmcblk*`) targeting common mount directories. Upon a match, it dynamically enforces the `MS_NOEXEC`, `MS_NOSUID`, and `MS_NODEV` flags, guaranteeing the removable media remains inert regardless of the arbitrary filesystem format utilized by an attacker.
 
+### I/O Confinement Monitor (`io_restrict`)
+
+> [!WARNING]  
+> This module operates in a **strict default-deny posture** for asynchronous I/O. To prevent legitimate high-performance daemons from being terminated upon initializing an `io_uring` context, administrators must explicitly authorize compiled binaries by applying the `user.bouclier.io_restrict=1` extended attribute prior to enabling the module.
+
+Hardens the kernel's advanced I/O pathways against exploitation by intercepting `io_uring_setup`, `vmsplice`, and `splice` syscalls. To disarm high-speed ransomware encryption phases, the engine enforces an aggressive default-deny posture on asynchronous I/O. It restricts the instantiation of `io_uring` rings exclusively to explicitly authorized high-performance binaries mapped via a hardware-backed extended attribute whitelist. This effectively strips dropped ransomware payloads of the ability to maximize storage throughput, forcing them to utilize slow and easily intercepted synchronous I/O.
+
+Furthermore, the module neutralizes zero-copy memory corruption exploits by securing the pipeline buffers. Because `vmsplice` maps user pages directly into a pipe and is virtually never used by standard unprivileged applications, the engine applies strict confinement and completely blocks unprivileged invocations. Legitimate system operations heavily reliant on standard `splice` are safely permitted, but unprivileged execution is actively audited to provide a critical telemetry anchor for advanced threat correlation without breaking underlying system functionality.
+
 ## V. Privilege Escalation & Container Security
 
 Safeguards against nested namespace abuse and host-level boundary violations.
@@ -123,5 +132,3 @@ If an attacker compromises a legitimate nested container (like Docker or Flatpak
 `Bouclier Bleu` is in active development. The following heuristics are planned for near-term releases:
 
 * **Userfaultfd Confinement (`uffd_restrict`)** : Mitigates advanced heap-grooming and Use-After-Free (UAF) exploits. It severely restricts user-space page fault handling by globally denying access to `userfaultfd`, explicitly whitelisting only architecturally necessary processes (like QEMU/KVM).
-
-* **Asynchronous I/O Confinement (`uring_restrict`)** : Disarms high-speed ransomware encryption phases. It hooks into `uring_setup` to restrict the instantiation of `io_uring` rings exclusively to a dynamic whitelist of high-performance binaries (e.g., Nginx, PostgreSQL), forcing dropped payloads to use slow, synchronous I/O.
