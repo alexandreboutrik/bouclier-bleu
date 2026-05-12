@@ -14,11 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::common::fs_utils::{build_secure_walker, generate_hardware_key};
-use crate::common::traits::{BpfReader, MapProvider};
+use crate::common::traits::BpfReader;
 use crate::define_security_module;
-use libbpf_rs::MapCore;
-use xattr::FileExt;
 
 /// Telemetry payload yielded by the `io_restrict` BPF hooks.
 ///
@@ -109,86 +106,16 @@ define_security_module!(
 			alert.pid, action_str, alert.syscall
 		);
 	},
-	capacities: || -> std::collections::HashMap<String, u32> {
-		/*
-		 * JIT Map Sizing Heuristic
-		 * We traverse the filesystem exactly as we do for `strict_wx` to
-		 * establish a precise upper bound for the BPF Map allocation before
-		 * loading the eBPF program, avoiding severe memory lock overheads.
-		 */
-		let mut count = 0;
-		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
-
-		for path in target_paths {
-			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
-				if entry.file_type().is_file() {
-					count += 1;
-				}
-			}
-		}
-
-		// Apply a 25% safety buffer for future installations, with a fallback
-		// floor of 2048
-		let safe_capacity = ((count as f64 * 1.25) as u32).max(2048);
-
-		let mut caps = std::collections::HashMap::new();
-		caps.insert("io_restrict_binaries".to_string(), safe_capacity);
-		caps
-	},
-	init: |provider: &dyn MapProvider| -> Result<(), String> {
-		let bpf_map = provider.get_map("io_restrict_binaries")?;
-
-		// Standard system binary staging directories
-		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
-		let is_whitelisted: [u8; 1] = [1];
-
-		/*
-		 * Hardware-backed Extended Attribute Watchlist
-		 * We utilize the `user.bouclier.io_restrict` extended attribute
-		 * mechanism to authorize specific system binaries for high-performance
-		 * `io_uring` capabilities. This unified opt-in model simplifies system
-		 * administration while maintaining hardware-backed TOCTOU resilience.
-		 */
-		for path in target_paths {
-			println!("Bouclier Bleu [Setup]: Scanning {} for io_restrict authorized I/O daemons...", path);
-
-			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
-				if entry.file_type().is_file() {
-					/*
-					 * TOCTOU Race Condition Mitigation
-					 * By avoiding the path-based xattr::get entirely and
-					 * opening the file descriptor directly with O_NOFOLLOW, we
-					 * neutralize the window where an attacker could swap the
-					 * target binary for a malicious symlink.
-					 */
-					if let Ok(fd) = rustix::fs::openat(
-						rustix::fs::CWD,
-						entry.path(),
-						rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-						rustix::fs::Mode::empty(),
-					) {
-						let file = std::fs::File::from(fd);
-						match file.get_xattr("user.bouclier.io_restrict") {
-							Ok(Some(fd_xattr)) if fd_xattr == b"1" => {
-								if let Ok(metadata) = file.metadata() {
-									let key_bytes = generate_hardware_key(&metadata);
-
-									/*
-									 * Strict Map Exhaustion Handling
-									 */
-									if let Err(e) = bpf_map.update(&key_bytes, &is_whitelisted, libbpf_rs::MapFlags::ANY) {
-										return Err(format!("CRITICAL: io_restrict_binaries map failed to update: {}", e));
-									}
-
-									println!("Bouclier Bleu [Setup]: High-speed asynchronous I/O (io_uring) authorized for {:?}", entry.path());
-								}
-							}
-							_ => {}
-						}
-					}
-				}
-			}
-		}
-		Ok(())
+	/*
+	 * Declarative Hardware-Backed Watchlist
+	 * Automatically calculates JIT map sizing and securely scans the specified
+	 * directories to opt-in explicit binaries for high-performance `io_uring`
+	 * capabilities, abstracting away the complex filesystem TOCTOU
+	 * mitigations.
+	 */
+	xattr_watchlist: {
+		map_name: "io_restrict_binaries",
+		attribute: "user.bouclier.io_restrict",
+		target_paths: ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"]
 	}
 );

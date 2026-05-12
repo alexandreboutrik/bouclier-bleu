@@ -14,10 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use libbpf_rs::MapCore;
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use std::fs::{File, Metadata};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use xattr::FileExt;
 
 /// Secure Filesystem Traversal Builder
 ///
@@ -87,6 +89,98 @@ pub fn get_secure_hardware_key<P: AsRef<Path>>(path: P) -> std::io::Result<[u8; 
 
 	let metadata = file.metadata()?;
 	Ok(generate_hardware_key(&metadata))
+}
+
+/// Declarative Helper: JIT Map Sizing Heuristic
+///
+/// Traverses the provided system paths to establish a precise upper bound
+/// for the BPF Map allocation before loading the eBPF program, avoiding
+/// severe `RLIMIT_MEMLOCK` overheads from hardcoded worst-case scenarios.
+/// Applies a 25% safety buffer for future installations, with a fallback floor of 2048.
+pub fn calculate_watchlist_capacity(target_paths: &[&str]) -> u32 {
+	let mut count = 0;
+	for path in target_paths {
+		for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
+			if entry.file_type().is_file() {
+				count += 1;
+			}
+		}
+	}
+	((count as f64 * 1.25) as u32).max(2048)
+}
+
+/// Declarative Helper: Hardware-backed Extended Attribute Watchlist Setup
+///
+/// Scans system paths and populates a BPF map based on extended attributes.
+/// It utilizes a strict "No Symlink" policy to prevent TOCTOU race conditions
+/// while indexing opted-in binaries during daemon startup.
+pub fn populate_map_from_xattr(
+	bpf_map: &libbpf_rs::Map<'_>,
+	target_paths: &[&str],
+	xattr_name: &str,
+	module_slug: &str,
+) -> Result<(), String> {
+	let is_whitelisted: [u8; 1] = [1];
+
+	for path in target_paths {
+		println!(
+			"Bouclier Bleu [Setup]: Scanning {} for {} opt-in attributes...",
+			path, module_slug
+		);
+
+		for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
+			if entry.file_type().is_file() {
+				/*
+				 * TOCTOU Race Condition Mitigation
+				 * By avoiding the path-based `xattr::get` entirely and
+				 * opening the file descriptor directly with O_NOFOLLOW, we
+				 * completely neutralize the window where an attacker could
+				 * swap the target binary for a malicious symlink right before
+				 * we extract the hardware key.
+				 */
+				if let Ok(fd) = rustix::fs::openat(
+					rustix::fs::CWD,
+					entry.path(),
+					rustix::fs::OFlags::RDONLY
+						| rustix::fs::OFlags::NOFOLLOW
+						| rustix::fs::OFlags::CLOEXEC,
+					rustix::fs::Mode::empty(),
+				) {
+					let file = std::fs::File::from(fd);
+					match file.get_xattr(xattr_name) {
+						Ok(Some(fd_xattr)) if fd_xattr == b"1" => {
+							if let Ok(metadata) = file.metadata() {
+								let key_bytes = generate_hardware_key(&metadata);
+
+								/*
+								 * Strict Map Exhaustion Handling
+								 * We explicitly catch and bubble up errors if
+								 * the BPF map runs out of bounds, preferring
+								 * to crash the daemon rather than silently
+								 * failing open.
+								 */
+								if let Err(e) = bpf_map.update(
+									&key_bytes,
+									&is_whitelisted,
+									libbpf_rs::MapFlags::ANY,
+								) {
+									return Err(format!(
+										"CRITICAL: {} map failed to update: {}",
+										bpf_map.name().to_string_lossy(),
+										e
+									));
+								}
+
+								println!("Bouclier Bleu [Setup]: {} strict enforcement activated for {:?}", module_slug, entry.path());
+							}
+						}
+						_ => {} // Attribute not present or invalid; silently ignore
+					}
+				}
+			}
+		}
+	}
+	Ok(())
 }
 
 #[cfg(test)]

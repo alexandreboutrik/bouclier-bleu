@@ -56,6 +56,11 @@ macro_rules! define_security_module {
         mitre: [$($mitre_tags:expr),*],
         parser: $parser:path,
         handler: $handler:expr
+        $(, xattr_watchlist: {
+            map_name: $map_name:expr,
+            attribute: $attribute:expr,
+            target_paths: [$($target_paths:expr),*]
+        })?
         $(, capacities: $capacities_closure:expr)?
         $(, init: $init_closure:expr)?
     ) => {
@@ -148,9 +153,19 @@ macro_rules! define_security_module {
 
             fn map_capacities(&self) -> std::collections::HashMap<String, u32> {
                 let mut _caps = std::collections::HashMap::new();
+
+                // Auto-generate capacity from the declarative xattr_watchlist
                 $(
-                    _caps = $capacities_closure();
+                    let paths = [$($target_paths),*];
+                    let capacity = $crate::common::fs_utils::calculate_watchlist_capacity(&paths);
+                    _caps.insert($map_name.to_string(), capacity);
                 )?
+
+                // Append/Override with custom capacities closure (if provided)
+                $(
+                    _caps.extend($capacities_closure());
+                )?
+
                 _caps
             }
 
@@ -162,9 +177,21 @@ macro_rules! define_security_module {
              * safe-Rust boundary enforced by the IoC registry.
              */
             fn init(&self, _provider: &dyn $crate::common::traits::MapProvider) -> Result<(), String> {
+                // Auto-populate from the declarative xattr_watchlist
+                $(
+                    let map = _provider.get_map($map_name)?;
+                    let paths = [$($target_paths),*];
+
+                    // Delegate to the pure-Rust filesystem abstraction to
+                    // maintain the safe boundary
+                    $crate::common::fs_utils::populate_map_from_xattr(&map, &paths, $attribute, $slug)?;
+                )?
+
+                // Execute custom initialization closures (if provided)
                 $(
                     $init_closure(_provider)?;
                 )?
+
                 Ok(())
             }
         }

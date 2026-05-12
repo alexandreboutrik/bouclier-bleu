@@ -14,11 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::common::fs_utils::{build_secure_walker, generate_hardware_key};
-use crate::common::traits::{BpfReader, MapProvider};
+use crate::common::traits::BpfReader;
 use crate::define_security_module;
-use libbpf_rs::MapCore;
-use xattr::FileExt;
 
 /// Telemetry payload yielded by the `strict_wx` BPF hook.
 #[derive(Debug, serde::Serialize)]
@@ -79,82 +76,15 @@ define_security_module!(
 			alert.pid, alert.syscall
 		);
 	},
-	capacities: || -> std::collections::HashMap<String, u32> {
-		let mut count = 0;
-		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
-
-		for path in target_paths {
-			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
-				if entry.file_type().is_file() {
-					count += 1;
-				}
-			}
-		}
-
-		// Apply a 25% safety buffer for future installations, with a fallback
-		// floor of 2048
-		let safe_capacity = ((count as f64 * 1.25) as u32).max(2048);
-
-		let mut caps = std::collections::HashMap::new();
-		caps.insert("strict_wx_binaries".to_string(), safe_capacity);
-		caps
-	},
-	init: |provider: &dyn MapProvider| -> Result<(), String> {
-		let bpf_map = provider.get_map("strict_wx_binaries")?;
-
-		// Standard system binary staging directories
-		let target_paths = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"];
-		let is_protected: [u8; 1] = [1];
-
-		/*
-		 * Hardware-backed Extended Attribute Watchlist
-		 * To eliminate the massive overhead of reading extended attributes
-		 * inside the eBPF fast-path during every memory allocation, we index
-		 * opted-in binaries during daemon startup.
-		 */
-		for path in target_paths {
-			println!("Bouclier Bleu [Setup]: Scanning {} for strict_wx opt-in attributes...", path);
-
-			for entry in build_secure_walker(path).filter_map(|e| e.ok()) {
-				if entry.file_type().is_file() {
-					/*
-					 * TOCTOU Race Condition Mitigation
-					 * By avoiding the path-based xattr::get entirely and
-					 * opening the file descriptor directly with O_NOFOLLOW, we
-					 * completely neutralize the window where an attacker could
-					 * swap the target binary for a malicious symlink.
-					 */
-					if let Ok(fd) = rustix::fs::openat(
-						rustix::fs::CWD,
-						entry.path(),
-						rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-						rustix::fs::Mode::empty(),
-					) {
-						let file = std::fs::File::from(fd);
-						match file.get_xattr("user.bouclier.strict_wx") {
-							Ok(Some(fd_xattr)) if fd_xattr == b"1" => {
-								if let Ok(metadata) = file.metadata() {
-									let key_bytes = generate_hardware_key(&metadata);
-
-									/*
-									 * Strict Map Exhaustion Handling
-									 * Catch and crash early if the BPF
-									 * map runs out of bounds rather
-									 * than silently failing open.
-									 */
-									if let Err(e) = bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY) {
-										return Err(format!("CRITICAL: strict_wx_binaries map failed to update: {}", e));
-									}
-
-									println!("Bouclier Bleu [Setup]: W^X strict enforcement activated for {:?}", entry.path());
-								}
-							}
-							_ => {}
-						}
-					}
-				}
-			}
-		}
-		Ok(())
+	/*
+	 * Declarative Hardware-Backed Watchlist
+	 * Automatically compiles the strict W^X policy allowed-list at daemon
+	 * startup, eliminating the massive overhead of reading extended attributes
+	 * inside the eBPF fast-path.
+	 */
+	xattr_watchlist: {
+		map_name: "strict_wx_binaries",
+		attribute: "user.bouclier.strict_wx",
+		target_paths: ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"]
 	}
 );
