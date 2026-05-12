@@ -156,8 +156,9 @@ static __always_inline int enforce_strict_wx(unsigned long prot,
 			bpf_ringbuf_submit(event, 0);
 		}
 
-		bpf_printk("Bouclier Bleu [BLOCK]: W^X violation mitigated via %s\n",
-				   syscall_name);
+		bpf_debug_printk(
+			"Bouclier Bleu [BLOCK]: W^X violation mitigated via %s\n",
+			syscall_name);
 		return -EACCES;
 	}
 

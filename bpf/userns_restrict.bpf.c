@@ -78,6 +78,10 @@ static __always_inline void dispatch_userns_alert(__u32 action_type,
 	event->target[sizeof(event->target) - 1] = '\0';
 
 	bpf_ringbuf_submit(event, 0);
+
+	bpf_debug_printk(
+		"Bouclier Bleu [BLOCK]: Namespace restriction triggered: %s\n",
+		target_str);
 }
 
 /*

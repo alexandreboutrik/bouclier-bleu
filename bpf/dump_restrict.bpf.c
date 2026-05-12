@@ -119,6 +119,10 @@ static __always_inline void dispatch_dump_alert(struct task_struct *task,
 	event->comm[sizeof(event->comm) - 1] = '\0';
 
 	bpf_ringbuf_submit(event, 0);
+
+	bpf_debug_printk("Bouclier Bleu [BLOCK]: Core dump evasion mitigated "
+					 "(Action Type: %d).\n",
+					 action_type);
 }
 
 /*
@@ -341,6 +345,9 @@ int BPF_PROG(dump_restrict_bprm_check, struct linux_binprm *bprm) {
 					bpf_ringbuf_submit(event, 0);
 				}
 
+				bpf_debug_printk(
+					"Bouclier Bleu [BLOCK]: Unprivileged piped core "
+					"handler execution blocked.\n");
 				return -EPERM;
 			}
 		}

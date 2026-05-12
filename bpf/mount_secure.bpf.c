@@ -275,8 +275,9 @@ static __always_inline int evaluate_secure_mount(const char *dev_name,
 	/* Enforcement & Telemetry */
 	if (is_target) {
 		dispatch_mount_alert(dev_name, fs_type, path_buf);
-		bpf_printk("Bouclier Bleu [BLOCK]: Insecure removable media mount "
-				   "prevented.\n");
+		bpf_debug_printk(
+			"Bouclier Bleu [BLOCK]: Insecure removable media mount "
+			"prevented.\n");
 		return -EPERM;
 	}
 

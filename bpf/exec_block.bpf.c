@@ -182,8 +182,9 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		}
 
 		if (!(seals & F_SEAL_WRITE)) {
-			bpf_printk("Bouclier Bleu [BLOCK]: Unsealed fileless execution "
-					   "blocked.\n");
+			bpf_debug_printk(
+				"Bouclier Bleu [BLOCK]: Unsealed fileless execution "
+				"blocked.\n");
 			goto block_exec;
 		}
 
@@ -214,8 +215,9 @@ block_exec:
 	len = bpf_d_path(&file->f_path, path_buf, PATH_MAX);
 	if (len < 0) {
 		if (len == -ENAMETOOLONG) {
-			bpf_printk("Bouclier Bleu [Warning]: Execution path truncated "
-					   "(>4096 bytes).\n");
+			bpf_debug_printk(
+				"Bouclier Bleu [Warning]: Execution path truncated "
+				"(>4096 bytes).\n");
 			path_buf[PATH_MAX - 1] = '\0';
 		} else {
 			path_buf[0] = '\0';

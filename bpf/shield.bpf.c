@@ -100,7 +100,7 @@ BOUCLIER_PROTECTED_FILES_MAP;
 									  target_str);                             \
 			bpf_ringbuf_submit(event, 0);                                      \
 		}                                                                      \
-		bpf_printk(log_msg);                                                   \
+		bpf_debug_printk(log_msg);                                             \
 		return -EPERM;                                                         \
 	}                                                                          \
 	return 0;
@@ -181,8 +181,9 @@ int BPF_PROG(shield_file_open, struct file *file) {
 			}
 			bpf_ringbuf_submit(event, 0);
 		}
-		bpf_printk("Bouclier Bleu [BLOCK]: Unauthorized modification of core "
-				   "EDR file.\n");
+		bpf_debug_printk(
+			"Bouclier Bleu [BLOCK]: Unauthorized modification of core "
+			"EDR file.\n");
 		return -EACCES; // Fail-closed execution block
 	}
 

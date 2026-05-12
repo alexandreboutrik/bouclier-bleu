@@ -139,6 +139,11 @@ static __always_inline void dispatch_ptrace_alert(__u32 tracer_tgid,
 	}
 
 	bpf_ringbuf_submit(event, 0);
+
+	bpf_debug_printk(
+		"Bouclier Bleu [BLOCK]: Ptrace boundary violation prevented "
+		"(Action Type: %d).\n",
+		action_type);
 }
 
 /*

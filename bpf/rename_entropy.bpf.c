@@ -338,7 +338,7 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 */
 			long sig_result = bpf_send_signal(9);
 			if (sig_result < 0) {
-				bpf_printk(
+				bpf_debug_printk(
 					"Bouclier Bleu [ERROR]: SIGKILL delivery failed (%ld).\n",
 					sig_result);
 			}
@@ -350,9 +350,10 @@ int BPF_PROG(rename_entropy_path_rename, const struct path *old_dir,
 			 * We still issue the kill to prevent ransomware encryption, but
 			 * this represents a degraded, silent kill.
 			 */
-			bpf_printk("Bouclier Bleu [FATAL]: Ring buffer exhausted. Killing "
-					   "PID %d.\n",
-					   bpf_get_current_pid_tgid() >> 32);
+			bpf_debug_printk(
+				"Bouclier Bleu [FATAL]: Ring buffer exhausted. Killing "
+				"PID %d.\n",
+				bpf_get_current_pid_tgid() >> 32);
 			bpf_send_signal(9);
 		}
 		return -EPERM; // Block the rename atomically in the kernel

@@ -5,6 +5,8 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 
+#include "./module_core.h"
+
 /**
  * struct dir_id - Cross-Device Unique Directory Identifier
  * @ino: The physical inode number.
@@ -126,9 +128,10 @@ static __always_inline void inherit_protection(void *map,
 		 * malicious directories go unmonitored.
 		 */
 		if (err) {
-			bpf_printk("Bouclier Bleu [CRITICAL]: protected_dirs map exhausted "
-					   "in %s! Fail-open state.\n",
-					   module_name);
+			bpf_debug_printk(
+				"Bouclier Bleu [CRITICAL]: protected_dirs map exhausted "
+				"in %s! Fail-open state.\n",
+				module_name);
 			/*
 			 * Immediate Neutralization
 			 * To prevent an evasion bypass via forced map exhaustion, we send
@@ -138,9 +141,10 @@ static __always_inline void inherit_protection(void *map,
 			 */
 			long sig_result = bpf_send_signal(9);
 			if (sig_result < 0) {
-				bpf_printk("Bouclier Bleu [ERROR]: SIGKILL delivery failed "
-						   "during map exhaustion (%ld).\n",
-						   sig_result);
+				bpf_debug_printk(
+					"Bouclier Bleu [ERROR]: SIGKILL delivery failed "
+					"during map exhaustion (%ld).\n",
+					sig_result);
 			}
 		}
 	}

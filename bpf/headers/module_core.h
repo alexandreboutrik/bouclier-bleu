@@ -9,6 +9,19 @@
 #define PATH_MAX 4096
 #endif
 
+/*
+ * Conditional Debug Logging
+ * bpf_printk is computationally expensive and introduces a DoS vector if an
+ * attacker spams a blocked action to flood the kernel trace pipe.
+ * All logging is conditionally compiled via BOUCLIER_DEBUG. In production,
+ * telemetry is exclusively streamed via the lockless ring buffer.
+ */
+#ifdef BOUCLIER_DEBUG
+#define bpf_debug_printk(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
+#else
+#define bpf_debug_printk(fmt, ...)
+#endif
+
 /**
  * BOUCLIER_MODULE_ALERTS - Standardized Telemetry RingBuffer
  *
@@ -79,8 +92,9 @@ static __always_inline int is_module_active(void *map) {
 		 * (active = 1). Degrading visibility is dangerous, but disabling
 		 * protection entirely during a map exhaustion attack is fatal.
 		 */
-		bpf_printk("Bouclier Bleu [FATAL]: Control map lookup failed. Failing "
-				   "closed.\n");
+		bpf_debug_printk(
+			"Bouclier Bleu [FATAL]: Control map lookup failed. Failing "
+			"closed.\n");
 		return 1;
 	}
 

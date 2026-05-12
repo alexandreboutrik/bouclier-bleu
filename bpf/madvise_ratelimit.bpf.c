@@ -199,6 +199,13 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 		 */
 		if (sig_result == 0) {
 			state_ptr->count = 0;
+			bpf_debug_printk("Bouclier Bleu [BLOCK]: Thread %d neutralized for "
+							 "MADV_DONTNEED spam.\n",
+							 tid);
+		} else {
+			bpf_debug_printk("Bouclier Bleu [ERROR]: SIGKILL delivery failed "
+							 "(%ld).\n",
+							 sig_result);
 		}
 
 		struct madvise_alert *event =
