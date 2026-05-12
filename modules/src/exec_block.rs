@@ -65,18 +65,17 @@ define_security_module!(
 	name: "Untrusted Path Execution Prevention",
 	slug: "exec_block",
 	/*
-	 * T1105 - Ingress Tool Transfer
-	 * Attackers can download secondary payloads (droppers, web shells,
-	 * post-exploitation frameworks) into world-writable staging directories
-	 * like /tmp, /var/tmp, or /dev/shm before executing them. The module
-	 * blocks this execution pathway.
-	 *
 	 * T1620 - Reflective Code Loading
 	 * The module eBPF checks against i_nlink == 0 and F_SEAL_WRITE on
 	 * shmem_inode_info are neutralizing fileless malware execution via
 	 * memfd_create and O_TMPFILE.
+	 *
+	 * T1027.002 - Obfuscated Files or Information: Software Packing
+	 * Mitigates fileless malware execution vectors (e.g., memfd_create,
+	 * O_TMPFILE) by validating physical inode link counts and enforcing
+	 * F_SEAL_WRITE immutability constraints on anonymous memory blocks.
 	 */
-	mitre: ["T1105", "T1620"],
+	mitre: ["T1620", "T1027.002"],
 	parser: ExecAlert::try_from_bytes,
 	handler: |alert: ExecAlert| {
 		println!(

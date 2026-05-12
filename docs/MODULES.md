@@ -9,7 +9,7 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **32 eBPF hooks**, driving **10 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **90 automated tests**, encompassing 19 unit, 64 component, 3 integration, and 4 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **32 eBPF hooks**, driving **10 active security detectors** (modules) that map directly to **19 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **91 automated tests**, encompassing 19 unit, 65 component, 3 integration, and 4 benchmark validation pipelines.
 
 ### Memory Footprint
 

@@ -87,22 +87,22 @@ define_security_module!(
 	name: "Process Injection Prevention",
 	slug: "ptrace_block",
 	/*
-	 * T1055 - Process Injection
-	 * Blocking unauthorized PTRACE_MODE_ATTACH and unprivileged PTRACE_TRACEME
-	 * neutralizes dynamic shellcode staging into remote processes and hollow
-	 * process injection.
+	 * T1055.008 - Process Injection: Ptrace
+	 * By strictly governing PTRACE_TRACEME and PTRACE_MODE_ATTACH, this
+	 * module directly neutralizes unprivileged hollow process injection
+	 * and malicious cross-process debugger attachments.
 	 *
-	 * T1003.008 - OS Credential Dumping: /etc/passwd and /etc/shadow (Memory)
-	 * Memory scraping of password managers or authentication daemons (like
-	 * sshd) via PTRACE_MODE_READ is blocked via the hardware invariant
-	 * watchlist, mimicking Windows LSASS protection on Linux.
+	 * T1003.007 - OS Credential Dumping: Proc Filesystem
+	 * Prevents adversaries from extracting plaintext credentials from live
+	 * memory by blocking ptrace and VFS-based /proc/**/mem reads against
+	 * hardware-verified authorization daemons (e.g., sshd, gdm).
 	 *
 	 * T1068 - Exploitation for Privilege Escalation
 	 * Neutralizes direct VFS-based memory writes to /proc/**/mem, stopping
 	 * exploits and advanced stealth injectors that bypass standard ptrace
 	 * hooks.
 	 */
-	mitre: ["T1055", "T1003.008", "T1068"],
+	mitre: ["T1055.008", "T1003.007", "T1068"],
 	parser: PtraceAlert::try_from_bytes,
 	handler: |alert: PtraceAlert| {
 		let action_str = match alert.action_type {

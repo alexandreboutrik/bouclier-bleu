@@ -77,8 +77,18 @@ define_security_module!(
 	 * T1204.002 - User Execution: Malicious File
 	 * Enforcing MS_NOEXEC / MNT_NOEXEC to prevent payload execution from the
 	 * mounted device.
+	 *
+	 * T1068 - Exploitation for Privilege Escalation
+	 * Enforcing MS_NODEV / MNT_NODEV neutralizes the creation of spoofed
+	 * character or block devices on removable media, preventing attackers
+	 * from directly tampering with raw physical memory or host disks.
+	 *
+	 * T1091 - Replication Through Removable Media
+	 * Directly neutralizes lateral movement and initial access vectors that
+	 * rely on executing malicious payloads from physical USB drops or rogue
+	 * removable drives by strictly enforcing MS_NOEXEC on hot-plugged devices.
 	 */
-	mitre: ["T1200", "T1548.001", "T1204.002"],
+	mitre: ["T1200", "T1548.001", "T1204.002", "T1068", "T1091"],
 	parser: MountAlert::try_from_bytes,
 	handler: |alert: MountAlert| {
 		println!(

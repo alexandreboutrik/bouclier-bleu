@@ -75,12 +75,17 @@ define_security_module!(
 	 * The lsm/file_open hook blocks writing to /etc/bouclier-bleu/config.toml,
 	 * while the lsm/bpf hook blocks unprivileged eBPF unloading.
 	 *
+	 * T1014 - Rootkit
+	 * Serves as an anti-rootkit boundary by preventing unprivileged processes
+	 * from unloading, tampering with, or bypassing active eBPF security hooks
+	 * and daemon configurations.
+	 *
 	 * T1082 - System Information Discovery
 	 * By hooking lsm/syslog to enforce kernel.dmesg_restrict=1, the module
 	 * stops attackers from reading the kernel ring buffer to scrape pointer
 	 * addresses and bypass KASLR.
 	 */
-	mitre: ["T1562.001", "T082"],
+	mitre: ["T1562.001", "T1014", "T082"],
 	parser: ShieldAlert::try_from_bytes,
 	handler: |alert: ShieldAlert| {
 		let action_str = match alert.action_type {

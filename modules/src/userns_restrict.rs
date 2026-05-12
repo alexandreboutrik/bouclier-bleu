@@ -89,8 +89,15 @@ define_security_module!(
 	 * Neutralizes privilege escalation vectors by strictly gating capability
 	 * grants and sensitive filesystem mounts that attackers use to tamper with
 	 * underlying physical constraints.
+	 *
+	 * T1610 - Deploy Container
+	 * T1612 - Build Image on Host
+	 * By restricting unprivileged user namespace creation (CLONE_NEWUSER),
+	 * the module neutralizes an adversary's ability to utilize daemonless
+	 * container engines (e.g., Podman, Buildah) to build malicious images or
+	 * deploy rogue containers locally to bypass system-level auditing.
 	 */
-	mitre: ["T1611", "T1068"],
+	mitre: ["T1611", "T1068", "T1610", "T1612"],
 	parser: UsernsAlert::try_from_bytes,
 	handler: |alert: UsernsAlert| {
 		let action_str = match alert.action_type {

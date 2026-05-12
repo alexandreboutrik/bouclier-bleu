@@ -67,8 +67,13 @@ define_security_module!(
 	 * W^X enforcement also severely limits an attacker's ability to map
 	 * malicious shared libraries (.so) into memory dynamically without
 	 * touching the disk.
+	 *
+	 * T1027.002 - Obfuscated Files or Information: Software Packing
+	 * Packers must decompress or decrypt their payload dynamically in memory.
+	 * Denying PROT_WRITE | PROT_EXEC allocations directly starves packers of
+	 * the memory states required to unwrap and execute their obfuscated code.
 	 */
-	mitre: ["T1055", "T1620"],
+	mitre: ["T1055", "T1620", "T1027.002"],
 	parser: StrictWxAlert::try_from_bytes,
 	handler: |alert: StrictWxAlert| {
 		println!(
