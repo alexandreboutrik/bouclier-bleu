@@ -31,6 +31,41 @@ char LICENSE[] SEC("license") = "GPL";
 #define ACTION_IO_URING 1
 #define ACTION_VMSPLICE 2
 #define ACTION_SPLICE 3
+#define ACTION_SPLICE_FLAGS 4
+#define ACTION_SPLICE_TAINT 5
+
+/* VFS / Splice Fallback Macros */
+#ifndef FMODE_READ
+#define FMODE_READ ((fmode_t)0x1)
+#endif
+#ifndef FMODE_WRITE
+#define FMODE_WRITE ((fmode_t)0x2)
+#endif
+#ifndef S_IFMT
+#define S_IFMT 00170000
+#endif
+#ifndef S_IFIFO
+#define S_IFIFO 00010000
+#endif
+#ifndef S_ISFIFO
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+#endif
+
+#ifndef SPLICE_F_MOVE
+#define SPLICE_F_MOVE 1
+#endif
+#ifndef SPLICE_F_NONBLOCK
+#define SPLICE_F_NONBLOCK 2
+#endif
+#ifndef SPLICE_F_MORE
+#define SPLICE_F_MORE 4
+#endif
+#ifndef SPLICE_F_GIFT
+#define SPLICE_F_GIFT 8
+#endif
+
+/* Pipeline Taint Identifiers */
+#define TAINTED_READONLY 1
 
 /**
  * struct io_restrict_alert - Telemetry Payload Contract
@@ -60,6 +95,21 @@ struct {
 	__type(value, __u8);
 	__uint(max_entries, 2048);
 } io_restrict_binaries SEC(".maps");
+
+/**
+ * pipe_taint_map - Tainted Pipeline Tracker (Information Flow Isolation)
+ *
+ * Stores the dynamic "taint" state of pipes. The key is the physical memory
+ * address of the pipe (`struct pipe_inode_info *`). By using an LRU Hash map,
+ * we cap memory at ~1MB (8192 entries) and rely on the kernel to automatically
+ * evict old or inactive pipe trackers, neutralizing memory exhaustion attacks.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, void *); /* pipe_inode_info ptr */
+	__type(value, __u8);
+	__uint(max_entries, 8192);
+} pipe_taint_map SEC(".maps");
 
 BOUCLIER_MODULE_ALERTS;
 BOUCLIER_MODULE_STATE_MAP;
@@ -94,6 +144,38 @@ static __always_inline void dispatch_io_alert(__u32 action_type,
 	event->syscall[sizeof(event->syscall) - 1] = '\0';
 
 	bpf_ringbuf_submit(event, 0);
+}
+
+/**
+ * get_file_from_fd() - Safely resolve struct file * from an FD
+ * @task: Pointer to the current task_struct.
+ * @fd_num: The integer file descriptor.
+ *
+ * Utilizes CO-RE to traverse the task's file descriptor table. This is needed
+ * for inspecting file metadata (like read-only permissions or pipe mappings)
+ * within syscall entry hooks where we only possess integer FDs.
+ */
+static __always_inline struct file *get_file_from_fd(struct task_struct *task,
+													 unsigned int fd_num) {
+	struct files_struct *files = BPF_CORE_READ(task, files);
+	if (!files)
+		return NULL;
+
+	struct fdtable *fdt = BPF_CORE_READ(files, fdt);
+	if (!fdt)
+		return NULL;
+
+	unsigned int max_fds = BPF_CORE_READ(fdt, max_fds);
+	if (fd_num >= max_fds)
+		return NULL;
+
+	struct file **fd_array = BPF_CORE_READ(fdt, fd);
+	if (!fd_array)
+		return NULL;
+
+	struct file *f = NULL;
+	bpf_probe_read_kernel(&f, sizeof(f), &fd_array[fd_num]);
+	return f;
 }
 
 /*
@@ -192,7 +274,8 @@ int BPF_KSYSCALL(io_restrict_vmsplice) {
  * system functionality.
  */
 SEC("ksyscall/splice")
-int BPF_KSYSCALL(io_restrict_splice) {
+int BPF_KSYSCALL(io_restrict_splice, int fd_in, loff_t *off_in, int fd_out,
+				 loff_t *off_out, size_t len, unsigned int flags) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}
@@ -209,11 +292,145 @@ int BPF_KSYSCALL(io_restrict_splice) {
 	__u32 uid = get_global_uid();
 
 	/*
-	 * We only log unprivileged splice events to avoid flooding the ring buffer
-	 * with standard root daemon system I/O.
+	 * Fast-Path Deferral
+	 * Legitimate root daemons bypass immediately
 	 */
-	if (uid != 0) {
-		dispatch_io_alert(ACTION_SPLICE, "splice");
+	if (uid == 0)
+		return 0;
+
+	/*
+	 * Invariant : Restricting Zero-Copy Flags
+	 * Standard utilities (cat, cp) rely on default copy behaviors. Exploit
+	 * chains frequently manipulate the kernel's MMU by passing advanced flags
+	 * designed to hand over memory pages entirely (SPLICE_F_GIFT,
+	 * SPLICE_F_MOVE). We restrict unprivileged users from accessing these
+	 * complex mechanisms.
+	 */
+	if (flags & (SPLICE_F_GIFT | SPLICE_F_MOVE)) {
+		bpf_send_signal(9);
+		dispatch_io_alert(ACTION_SPLICE_FLAGS, "splice");
+
+		bpf_debug_printk("Bouclier Bleu [BLOCK]: Unprivileged splice with "
+						 "GIFT/MOVE flags intercepted.\n");
+
+		return 0;
+	}
+
+	/*
+	 * Invariant : The "Tainted Pipeline" (Information Flow Tracking)
+	 * Resolves raw pointers (no string parsing) to evaluate the data flow. If
+	 * data flows from a read-only file into a pipe, that pipe's state becomes
+	 * TAINTED_READONLY.
+	 */
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct file *f_in = get_file_from_fd(task, fd_in);
+	struct file *f_out = get_file_from_fd(task, fd_out);
+
+	if (f_in && f_out) {
+		umode_t in_mode = BPF_CORE_READ(f_in, f_inode, i_mode);
+		umode_t out_mode = BPF_CORE_READ(f_out, f_inode, i_mode);
+
+		bool in_is_pipe = S_ISFIFO(in_mode);
+		bool out_is_pipe = S_ISFIFO(out_mode);
+
+		if (out_is_pipe) {
+			void *pipe_ptr = BPF_CORE_READ(f_out, private_data);
+			if (pipe_ptr) {
+				/* Protect against writing into an ALREADY TAINTED pipe */
+				__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &pipe_ptr);
+				if (taint && *taint == TAINTED_READONLY) {
+					bpf_send_signal(9);
+					dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
+					bpf_debug_printk("Bouclier Bleu [BLOCK]: Splice execution "
+									 "into TAINTED_READONLY pipe.\n");
+					return 0;
+				}
+
+				/*
+				 * If not tainted, check if the source is a read-only file.
+				 * If so, taint the pipe.
+				 */
+				fmode_t in_fmode = BPF_CORE_READ(f_in, f_mode);
+				if (!in_is_pipe && (in_fmode & FMODE_READ) &&
+					!(in_fmode & FMODE_WRITE)) {
+					__u8 new_taint = TAINTED_READONLY;
+					bpf_map_update_elem(&pipe_taint_map, &pipe_ptr, &new_taint,
+										BPF_ANY);
+					bpf_debug_printk("Bouclier Bleu [INFO]: Pipe structure "
+									 "marked as TAINTED_READONLY.\n");
+				}
+			}
+		}
+	}
+
+	/* Emit telemetry anchor for unprivileged splice operations */
+	dispatch_io_alert(ACTION_SPLICE, "splice");
+
+	return 0;
+}
+
+/*
+ * Defense Heuristic : Tainted Pipeline Write Confinement
+ * This hook enforces the final barrier of the "Tainted Pipeline" isolation.
+ * If an attacker successfully taints a pipe with read-only data via splice,
+ * this check guarantees they cannot subsequently use standard write()
+ * operations to mix unprivileged data into the same "laundry machine" buffer.
+ */
+SEC("ksyscall/write")
+int BPF_KSYSCALL(io_restrict_write, unsigned int fd, const char *buf,
+				 size_t count) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
+
+	__u32 uid = get_global_uid();
+	/*
+	 * Fast-Path Deferral
+	 * Trusted root processes bypass this check instantly, ensuring standard
+	 * administrative tasks incur zero performance overhead.
+	 */
+	if (uid == 0)
+		return 0;
+
+	/*
+	 * File Descriptor Resolution
+	 * Safely resolve the internal file structure from the integer FD.
+	 */
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct file *f_out = get_file_from_fd(task, fd);
+	if (!f_out)
+		return 0;
+
+	umode_t out_mode = BPF_CORE_READ(f_out, f_inode, i_mode);
+
+	/*
+	 * O(1) Performance Constraint
+	 * We strictly limit the taint lookup to file descriptors that are
+	 * definitively pipes (FIFOs). This prevents penalizing standard file I/O
+	 * operations.
+	 */
+	if (S_ISFIFO(out_mode)) {
+		void *pipe_ptr = BPF_CORE_READ(f_out, private_data);
+		if (pipe_ptr) {
+			/*
+			 * Taint Verification
+			 * If this pipe address exists in our LRU hash map and is marked as
+			 * TAINTED_READONLY, it means it previously ingested read-only
+			 * data. Allowing a write here would complete the zero-copy
+			 * "laundry" exploit.
+			 */
+			__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &pipe_ptr);
+			if (taint && *taint == TAINTED_READONLY) {
+				/*
+				 * Immediate Neutralization
+				 * Stop the exploit in its tracks by neutralizing the thread.
+				 */
+				bpf_send_signal(9);
+				dispatch_io_alert(ACTION_SPLICE_TAINT, "write");
+				bpf_debug_printk("Bouclier Bleu [BLOCK]: Standard write into "
+								 "TAINTED_READONLY pipe neutralized.\n");
+			}
+		}
 	}
 
 	return 0;

@@ -9,20 +9,21 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **28 eBPF hooks**, driving **9 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **79 automated tests**, encompassing 19 unit, 54 component, 3 integration, and 3 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **32 eBPF hooks**, driving **10 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **90 automated tests**, encompassing 19 unit, 64 component, 3 integration, and 4 benchmark validation pipelines.
 
 ### Memory Footprint
 
-The system maintains a highly optimized memory footprint totaling approximately **19,764 kB (~19 MB)** during active enforcement:
+The system maintains a highly optimized memory footprint totaling approximately **21,237 kB (~21 MB)** during active enforcement:
 
-- Userland Engine: 14,320 kB
-- eBPF Maps (Kernel Memory): 5,444 kB (total)
-    - rename_entropy: 1,555 kB
-    - exec_block: 1,007 kB
-    - madvise_ratelimit: 975 kB
+- Userland Engine: 14,700 kB
+- eBPF Maps (Kernel Memory): 6,537 kB (total)
+    - rename_entropy: 1,554 kB
+    - io_restrict: 1,096 kB
+    - exec_block: 1,006 kB
+    - madvise_ratelimit: 974 kB
     - strict_wx: 447 kB
     - shield: 304 kB
-    - mount_secure: 302 kB
+    - mount_secure: 301 kB
     - ptrace_block: 293 kB
     - dump_restrict: 287 kB
     - userns_restrict: 270 kB
@@ -107,9 +108,11 @@ Prevents physical USB drops or rogue SD cards from executing binaries or establi
 > [!WARNING]  
 > This module operates in a **strict default-deny posture** for asynchronous I/O. To prevent legitimate high-performance daemons from being terminated upon initializing an `io_uring` context, administrators must explicitly authorize compiled binaries by applying the `user.bouclier.io_restrict=1` extended attribute prior to enabling the module.
 
-Hardens the kernel's advanced I/O pathways against exploitation by intercepting `io_uring_setup`, `vmsplice`, and `splice` syscalls. To disarm high-speed ransomware encryption phases, the engine enforces an aggressive default-deny posture on asynchronous I/O. It restricts the instantiation of `io_uring` rings exclusively to explicitly authorized high-performance binaries mapped via a hardware-backed extended attribute whitelist. This effectively strips dropped ransomware payloads of the ability to maximize storage throughput, forcing them to utilize slow and easily intercepted synchronous I/O.
+Hardens the kernel's advanced I/O pathways against exploitation by intercepting `io_uring_setup`, `vmsplice`, `splice`, and `write` syscalls. To disarm high-speed ransomware encryption phases, the engine enforces an aggressive default-deny posture on asynchronous I/O. It restricts the instantiation of `io_uring` rings exclusively to explicitly authorized high-performance binaries mapped via a hardware-backed extended attribute whitelist. This effectively strips dropped ransomware payloads of the ability to maximize storage throughput, forcing them to utilize slow and easily intercepted synchronous I/O.
 
-Furthermore, the module neutralizes zero-copy memory corruption exploits by securing the pipeline buffers. Because `vmsplice` maps user pages directly into a pipe and is virtually never used by standard unprivileged applications, the engine applies strict confinement and completely blocks unprivileged invocations. Legitimate system operations heavily reliant on standard `splice` are safely permitted, but unprivileged execution is actively audited to provide a critical telemetry anchor for advanced threat correlation without breaking underlying system functionality.
+Furthermore, the module neutralizes zero-copy memory corruption exploits by securing pipeline buffers and reducing the attack surface. Because `vmsplice` maps user pages directly into a pipe and is virtually never used by standard unprivileged applications, the engine applies strict confinement and completely blocks unprivileged invocations. For standard `splice` operations utilized by legitimate command-line utilities, the engine denies unprivileged access to advanced memory-gifting flags like `SPLICE_F_GIFT` and `SPLICE_F_MOVE` designed to manipulate the kernel's memory management unit.
+
+To definitively neutralize zero-copy vulnerability chains, the engine enforces information flow tracking via a Tainted Pipeline invariant. By dynamically tracking the hardware addresses of pipes in an LRU hash map, the module detects when data flows from a read-only file into a pipe buffer and immediately marks that pipe as tainted. To break the exploitation laundry machine mechanism, any subsequent unprivileged attempts to mix malicious data into this tainted pipe, whether via additional `splice` operations or standard `write` calls, are immediately neutralized with a fatal signal. Standard unprivileged I/O that does not trigger these heuristics is safely permitted and audited via the telemetry pipeline.
 
 ## V. Privilege Escalation & Container Security
 
