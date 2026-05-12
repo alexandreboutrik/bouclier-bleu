@@ -22,18 +22,10 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-/*
- * Memory Advisory Flags
- * Redefined here to avoid dependencies on host-specific user-space headers
- * during CO-RE compilation.
- */
-#ifndef MADV_DONTNEED
-#define MADV_DONTNEED 4
-#endif
 
 /*
  * Heuristic Constants

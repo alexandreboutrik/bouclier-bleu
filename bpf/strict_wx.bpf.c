@@ -22,6 +22,7 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
@@ -31,13 +32,6 @@ char LICENSE[] SEC("license") = "GPL";
 #define PROT_WRITE 0x2
 #define PROT_EXEC 0x4
 #define WX_MASK (PROT_WRITE | PROT_EXEC)
-
-#ifndef VM_WRITE
-#define VM_WRITE 0x00000002
-#endif
-#ifndef VM_EXEC
-#define VM_EXEC 0x00000004
-#endif
 
 /**
  * struct strict_wx_alert - Telemetry Payload Contract

@@ -22,30 +22,11 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-#ifndef O_WRONLY
-#define O_WRONLY 00000001
-#endif
-#ifndef O_RDWR
-#define O_RDWR 00000002
-#endif
-#ifndef O_TRUNC
-#define O_TRUNC 00001000
-#endif
-
-#ifndef S_IFMT
-#define S_IFMT 00170000
-#endif
-#ifndef S_IFREG
-#define S_IFREG 0100000
-#endif
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
-#endif
 
 #define ACTION_FILE_TAMPER 1
 #define ACTION_BPF_TAMPER 2

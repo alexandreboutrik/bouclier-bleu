@@ -22,14 +22,11 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-#ifndef F_SEAL_WRITE
-#define F_SEAL_WRITE 0x008
-#endif
 
 #define TMPFS_MAGIC 0x01021994
 #define RAMFS_MAGIC 0x858458f6

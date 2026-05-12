@@ -22,6 +22,7 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
@@ -33,36 +34,6 @@ char LICENSE[] SEC("license") = "GPL";
 #define ACTION_SPLICE 3
 #define ACTION_SPLICE_FLAGS 4
 #define ACTION_SPLICE_TAINT 5
-
-/* VFS / Splice Fallback Macros */
-#ifndef FMODE_READ
-#define FMODE_READ ((fmode_t)0x1)
-#endif
-#ifndef FMODE_WRITE
-#define FMODE_WRITE ((fmode_t)0x2)
-#endif
-#ifndef S_IFMT
-#define S_IFMT 00170000
-#endif
-#ifndef S_IFIFO
-#define S_IFIFO 00010000
-#endif
-#ifndef S_ISFIFO
-#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
-#endif
-
-#ifndef SPLICE_F_MOVE
-#define SPLICE_F_MOVE 1
-#endif
-#ifndef SPLICE_F_NONBLOCK
-#define SPLICE_F_NONBLOCK 2
-#endif
-#ifndef SPLICE_F_MORE
-#define SPLICE_F_MORE 4
-#endif
-#ifndef SPLICE_F_GIFT
-#define SPLICE_F_GIFT 8
-#endif
 
 /* Pipeline Taint Identifiers */
 #define TAINTED_READONLY 1

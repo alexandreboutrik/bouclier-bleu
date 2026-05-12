@@ -22,6 +22,7 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
@@ -38,15 +39,6 @@ char LICENSE[] SEC("license") = "GPL";
  * The new mount API detaches mount creation from attachment, tracking flags
  * within the vfsmount struct using a distinct bitwise layout.
  */
-#ifndef MNT_NOSUID
-#define MNT_NOSUID 0x01
-#endif
-#ifndef MNT_NODEV
-#define MNT_NODEV 0x02
-#endif
-#ifndef MNT_NOEXEC
-#define MNT_NOEXEC 0x04
-#endif
 #define SECURE_MOVE_MNT_FLAGS (MNT_NOSUID | MNT_NODEV | MNT_NOEXEC)
 
 /**

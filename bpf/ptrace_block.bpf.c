@@ -22,44 +22,11 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-/*
- * Standard ptrace access modes.
- * Redefined here to avoid dependencies on host-specific user-space headers
- * during CO-RE compilation.
- */
-#ifndef PTRACE_MODE_READ
-#define PTRACE_MODE_READ 0x01
-#endif
-#ifndef PTRACE_MODE_ATTACH
-#define PTRACE_MODE_ATTACH 0x02
-#endif
-
-/*
- * VFS & File Status Flags
- * Redefined to avoid conflicting macros from <linux/fcntl.h> and
- * <linux/magic.h> when compiling against the generated vmlinux.h skeleton.
- */
-#ifndef PROC_SUPER_MAGIC
-#define PROC_SUPER_MAGIC 0x9fa0
-#endif
-
-#ifndef O_ACCMODE
-#define O_ACCMODE 00000003
-#endif
-#ifndef O_RDONLY
-#define O_RDONLY 00000000
-#endif
-#ifndef O_WRONLY
-#define O_WRONLY 00000001
-#endif
-#ifndef O_RDWR
-#define O_RDWR 00000002
-#endif
 
 /* Telemetry Action Identifiers */
 #define ACTION_CRED_DUMP 1

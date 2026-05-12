@@ -22,13 +22,10 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-#ifndef CAP_SYS_ADMIN
-#define CAP_SYS_ADMIN 21
-#endif
 
 /* Telemetry Action Identifiers */
 #define ACTION_USERNS_CREATE 1

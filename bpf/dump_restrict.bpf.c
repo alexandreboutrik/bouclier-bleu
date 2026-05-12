@@ -22,26 +22,11 @@
 
 #include <asm-generic/errno.h>
 
+#include "headers/bpf_fallbacks.h"
 #include "headers/module_core.h"
 #include "headers/vfs_helpers.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-/*
- * Kernel macros are stripped from the CO-RE vmlinux.h generation.
- * We manually redefine the necessary flags here.
- */
-#ifndef PF_DUMPCORE
-#define PF_DUMPCORE 0x00000200
-#endif
-
-#ifndef PR_SET_DUMPABLE
-#define PR_SET_DUMPABLE 4
-#endif
-
-#ifndef ENOSYS
-#define ENOSYS 38
-#endif
 
 /* Telemetry Action Identifiers */
 #define ACTION_COREDUMP_FILE 1
