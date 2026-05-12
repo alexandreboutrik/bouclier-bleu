@@ -82,10 +82,11 @@ struct madvise_tracker {
  * madvise_tracking_map - Temporal Lockbox
  *
  * Uses an LRU (Least Recently Used) Hash Map to track madvise frequency per
- * process (TGID). Utilizing an LRU map natively prevents map exhaustion
- * attacks where an adversary might spawn thousands of dummy processes strictly
- * to fill the BPF map before executing the real exploit. Old, inactive process
- * entries are automatically evicted.
+ * user (Global UID). Shifting from per-process (TGID) to per-user tracking
+ * completely neutralizes "Process Sharding" evasion techniques, where an
+ * adversary spawns dozens of discrete processes to divide the syscall spam
+ * and stay under the detection threshold. Old, inactive user entries are
+ * automatically evicted.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -130,17 +131,19 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 tid = (__u32)pid_tgid; // Lower 32 bits maps to the Kernel Thread ID
 	__u32 pid = pid_tgid >> 32;	 // Upper 32 bits maps to the Process ID (TGID)
+	__u32 uid = get_global_uid();
 
 	__u64 now = bpf_ktime_get_ns();
 
 	/*
-	 * Process-Wide Tracking (TGID)
-	 * Tracking by Process ID (TGID) instead of Thread ID (TID) prevents
-	 * evasion techniques where an adversary distributes madvise calls across
-	 * many threads to keep individual counters below the detection threshold.
+	 * User-Wide Tracking (Global UID)
+	 * Tracking by Global UID aggregates the rate limit across the user's
+	 * entire session. If an attacker spins up 50 separate processes to
+	 * execute the race condition, their aggregate `madvise` spam will still
+	 * trigger the threshold, effectively defeating Process Sharding.
 	 */
 	struct madvise_tracker *state_ptr =
-		bpf_map_lookup_elem(&madvise_tracking_map, &pid);
+		bpf_map_lookup_elem(&madvise_tracking_map, &uid);
 
 	struct madvise_tracker init_state = {};
 
@@ -148,7 +151,7 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 		init_state.window_start = now;
 		init_state.count = 1;
 
-		bpf_map_update_elem(&madvise_tracking_map, &pid, &init_state, BPF_ANY);
+		bpf_map_update_elem(&madvise_tracking_map, &uid, &init_state, BPF_ANY);
 		return 0;
 	}
 
@@ -167,9 +170,9 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 
 	/*
 	 * Concurrency-Safe Increment
-	 * Because multiple threads share the same PID tracker, we must use an
-	 * atomic increment directly on the map pointer to prevent lost updates
-	 * during a multi-threaded race condition attack.
+	 * Because multiple processes and threads share the same UID tracker, we
+	 * must use an atomic increment directly on the map pointer to prevent lost
+	 * updates during a multi-threaded or multi-process race condition attack.
 	 */
 	__sync_fetch_and_add(&state_ptr->count, 1);
 	__u64 current_count = state_ptr->count;

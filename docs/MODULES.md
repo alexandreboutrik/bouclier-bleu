@@ -86,7 +86,7 @@ Crucially, it utilizes a temporal Two-Hook Architecture to intercept piped core 
 
 ### Memory Advisory Race Condition Mitigator (`madvise_ratelimit`)
 
-Operating on the `tracepoint/syscalls/sys_enter_madvise` hook, this module neutralizes Use-After-Free and Copy-on-Write race conditions (e.g., Dirty Cow) by intercepting abnormal memory advisory spam. To prevent adversaries from evading detection by sharding calls across dozens of short-lived threads, the engine tracks the frequency of `MADV_DONTNEED` syscalls on a strict per-process (TGID) basis. It utilizes 64-bit atomic operations (`BPF_XADD`) directly on the map pointers to safely handle multi-threaded race conditions with minimal overhead.
+Operating on the `tracepoint/syscalls/sys_enter_madvise` hook, this module neutralizes Use-After-Free and Copy-on-Write race conditions (e.g., Dirty Cow) by intercepting abnormal memory advisory spam. To prevent adversaries from evading detection via "Process Sharding" - where an exploit's syscalls are divided across dozens of discrete, short-lived processes—the engine tracks the frequency of `MADV_DONTNEED` syscalls on a strict Global UID basis. It aggregates these calls across the user's entire session and utilizes 64-bit atomic operations (`BPF_XADD`) directly on the map pointers to safely handle multi-thread race conditions with minimal overhead.
 
 When a thread aggressively exceeds a statistical threshold of invocations within a single-second rolling window, the engine identifies the heap-grooming attempt and instantly dispatches a `SIGKILL` directly from kernel-space. This terminates the malicious thread the exact microsecond it exits the syscall context, breaking the exploit cycle before the attacker can successfully win the race condition.
 

@@ -1,4 +1,4 @@
-i#!/usr/bin/env bash
+#!/usr/bin/env bash
 
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -51,8 +51,8 @@ function provision_env() {
 		exit 1
 	}
 
-	# Compile inline C utility to simulate legitimate memory operations and
-	# race condition exploits (tight loops).
+	# Compile inline C utility to simulate legitimate memory operations,
+	# standard race conditions, and process sharding evasion.
 	local tester_c="${MADVISE_TESTER}.c"
 	cat <<'EOF' >"${tester_c}"
 #define _GNU_SOURCE
@@ -61,6 +61,7 @@ function provision_env() {
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 int main(int argc, char *argv[]) {
     if (argc < 2) return 1;
@@ -89,15 +90,44 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(argv[1], "exploit") == 0) {
         // Dirty Cow / UAF Simulation: 
-        // Spamming MADV_DONTNEED millions of times in a tight loop to force a 
-        // race condition. The eBPF program should intercept and issue SIGKILL
-        // long before this loop naturally terminates.
+        // Spamming MADV_DONTNEED in a tight loop.
         for (int i = 0; i < 500000; i++) {
             madvise(mem, page_size, MADV_DONTNEED);
         }
-        
-        // If we reach here, the kernel failed to kill us!
         return 0; 
+    }
+
+    if (strcmp(argv[1], "shard") == 0) {
+        /*
+         * Process Sharding Bypass Simulation
+         * Spawn 10 concurrent processes executing 2,000 loops each.
+         * Individually (2k) they are well below the 10k threshold.
+         * Collectively (20k) they cross the Global UID threshold.
+         */
+        int num_shards = 10;
+        int calls_per_shard = 2000;
+
+        for (int i = 0; i < num_shards; i++) {
+            pid_t pid = fork();
+            if (pid == 0) { // Child Process
+                for (int j = 0; j < calls_per_shard; j++) {
+                    madvise(mem, page_size, MADV_DONTNEED);
+                }
+                exit(0); 
+            }
+        }
+        
+        int status;
+        int killed_count = 0;
+        while (wait(&status) > 0) {
+            // Check if child was neutralized by SIGKILL (signal 9)
+            if (WIFSIGNALED(status) && WTERMSIG(status) == 9) {
+                killed_count++;
+            }
+        }
+        
+        // If Global UID tracking works, shards should have been killed
+        return (killed_count > 0) ? 137 : 0;
     }
 
     return 1;
@@ -120,11 +150,11 @@ function verify_benign_madvise() {
 	set -e
 
 	if [[ "${exit_code}" -ne 0 ]]; then
-		echo "[-] Assertion failed: Benign madvise usage was incorrectly blocked or killed! (Exit code: ${exit_code})"
+		echo "[-] Assertion failed: Benign madvise usage was incorrectly blocked! (Exit code: ${exit_code})"
 		exit 1
 	fi
 
-	echo "  [+] Benign memory operations successfully allowed (Zero False Positives)."
+	echo "  [+] Benign memory operations successfully allowed."
 }
 
 function verify_alternate_flag() {
@@ -136,11 +166,11 @@ function verify_alternate_flag() {
 	set -e
 
 	if [[ "${exit_code}" -ne 0 ]]; then
-		echo "[-] Assertion failed: High frequency of non-target flags triggered the heuristic! (Exit code: ${exit_code})"
+		echo "[-] Assertion failed: Non-target flags triggered the heuristic! (Exit code: ${exit_code})"
 		exit 1
 	fi
 
-	echo "  [+] Non-destructive memory flags cleanly bypassed via BPF fast-path."
+	echo "  [+] Non-destructive memory flags cleanly bypassed."
 }
 
 function verify_exploit_simulation() {
@@ -151,19 +181,28 @@ function verify_exploit_simulation() {
 	local exit_code=$?
 	set -e
 
-	if [[ "${exit_code}" -eq 0 ]]; then
-		echo "[-] Assertion failed: Exploit simulation successfully executed all loop iterations. Race condition unmitigated!"
-		exit 1
-	fi
-
-	# bpf_send_signal(9) queues a SIGKILL. The bash execution wrapper should
-	# report exit code 137.
 	if [[ "${exit_code}" -ne "${SIGKILL_EXIT_CODE}" ]]; then
-		echo "[-] Assertion failed: Expected fatal SIGKILL (${SIGKILL_EXIT_CODE}), but process exited with ${exit_code}."
+		echo "[-] Assertion failed: Expected fatal SIGKILL (${SIGKILL_EXIT_CODE}), but got ${exit_code}."
 		exit 1
 	fi
 
-	echo "  [+] Exploit tight-loop successfully intercepted and neutralized (SIGKILL)."
+	echo "  [+] Exploit tight-loop successfully neutralized (SIGKILL)."
+}
+
+function verify_shard_simulation() {
+	echo "  [*] Validating Process Sharding Mitigation (Expected: KILL)..."
+
+	set +e
+	su - "${TEST_USER}" -c "${MADVISE_TESTER} shard" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne "${SIGKILL_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: Process sharding evaded the rate-limiter! (Exit code: ${exit_code})"
+		exit 1
+	fi
+
+	echo "  [+] Process sharding successfully neutralized via Global UID tracking."
 }
 
 function verify_ipc_detachment() {
@@ -179,8 +218,6 @@ function verify_ipc_detachment() {
 	local exit_code=$?
 	set -e
 
-	# Since the module is disabled, the massive loop should complete naturally
-	# and return exit code 0.
 	if [[ "${exit_code}" -eq "${SIGKILL_EXIT_CODE}" ]]; then
 		echo "[-] Assertion failed: Disabled module still killed the process."
 		exit 1
@@ -198,6 +235,7 @@ initialize_daemon "madvise_ratelimit"
 verify_benign_madvise
 verify_alternate_flag
 verify_exploit_simulation
+verify_shard_simulation
 verify_ipc_detachment
 
 echo "  [+] Module 'madvise_ratelimit' validation passed."
