@@ -9,7 +9,7 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **28 eBPF hooks**, driving **9 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **76 automated tests**, encompassing 19 unit, 51 component, 3 integration, and 3 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **28 eBPF hooks**, driving **9 active security detectors** (modules) that map directly to **14 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **79 automated tests**, encompassing 19 unit, 54 component, 3 integration, and 3 benchmark validation pipelines.
 
 ### Memory Footprint
 
@@ -110,7 +110,11 @@ Safeguards against nested namespace abuse and host-level boundary violations.
 
 Provides a robust layer of defense against container escape vulnerabilities (e.g., Dirty Pipe, runc exploits) by monitoring `lsm/userns_create`, `lsm/capable`, and `lsm/sb_mount`.
 
-Because attackers frequently exploit unprivileged user namespaces as a staging ground for kernel vulnerabilities, the module evaluates the true global UID to block `unshare(CLONE_NEWUSER)` for all unprivileged tasks. If an attacker compromises a legitimate nested container (like Docker or Flatpak), the module prevents them from acquiring host-level privileges by evaluating the user namespace depth and strictly denying `CAP_SYS_ADMIN` requests originating from sandboxes. Finally, it mitigates host `/dev` mounts by instantly denying nested processes from mapping physical block devices or establishing `devtmpfs` environments, neutralizing direct host tampering.
+Because attackers frequently exploit unprivileged user namespaces as a staging ground for kernel vulnerabilities, the module evaluates both the effective global UID and process ancestry to block `unshare(CLONE_NEWUSER)` for all unprivileged tasks. 
+
+To defeat advanced evasion techniques where an attacker uses SUID binaries (like `su` or `bwrap`) as proxies or double-forks to reparent a malicious process to PID 1, the engine evaluates the immutable Audit Login UID (`loginuid`) and immediate parent credentials. This blocks adversaries from spoofing administrative origins, while natively permitting legitimate automated system daemons (like Docker or containerd) to provision infrastructure.
+
+If an attacker compromises a legitimate nested container (like Docker or Flatpak), the module prevents them from acquiring host-level privileges by evaluating the user namespace depth and strictly denying `CAP_SYS_ADMIN` requests originating from sandboxes. It also mitigates host `/dev` mounts by denying nested processes from mapping physical block devices or establishing `devtmpfs` environments, neutralizing direct host tampering.
 
 ---
 

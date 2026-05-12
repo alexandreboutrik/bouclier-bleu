@@ -83,9 +83,9 @@ static __always_inline void dispatch_userns_alert(__u32 action_type,
 /*
  * Defense Heuristic : Unprivileged Namespace Creation
  * Attackers exploit unprivileged user namespace creation as the crucial first
- * step for exploiting kernel vulnerabilities (like utilizing Dirty Pipe or
- * nf_tables bugs). We block `unshare(CLONE_NEWUSER)` for all unprivileged
- * tasks at the LSM boundary.
+ * step for exploiting kernel vulnerabilities. We block
+ * `unshare(CLONE_NEWUSER)` by evaluating both the effective UID and the
+ * immutable process ancestry to prevent SUID proxying and double-fork evasion.
  */
 SEC("lsm/userns_create")
 int BPF_PROG(userns_restrict_create, const struct cred *cred) {
@@ -93,12 +93,54 @@ int BPF_PROG(userns_restrict_create, const struct cred *cred) {
 		return 0;
 	}
 
+	struct task_struct *task = bpf_get_current_task_btf();
+	__u32 current_uid = get_global_uid();
+
 	/*
-	 * Use Bouclier's true Global UID extractor to avoid local mapping
-	 * bypasses.
+	 * Immutable Audit Anchor (Defeats SUID & Double-Fork)
+	 * The loginuid is set during the initial authentication phase (SSH/TTY)
+	 * and is irrevocably inherited by all children. It cannot be altered by
+	 * SUID binaries (su/sudo) or scrubbed via double-forking to PID 1.
+	 * System daemons spawned by systemd inherently hold AUDIT_UID_UNSET
+	 * (0xFFFFFFFF). By validating against this, we permit legitimate container
+	 * runtimes while blocking interactive human adversaries.
 	 */
-	if (get_global_uid() != 0) {
-		dispatch_userns_alert(ACTION_USERNS_CREATE, "unshare(CLONE_NEWUSER)");
+	__u32 login_uid = BPF_CORE_READ(task, loginuid.val);
+
+	/*
+	 * Immediate Parent Validation
+	 * Captures the real_parent creds. This serves as a secondary defense layer
+	 * for environments where the Audit subsystem might be disabled, ensuring
+	 * simple SUID proxies are still caught.
+	 */
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	__u32 parent_uid = BPF_CORE_READ(parent, cred, uid.val);
+
+	if (current_uid != 0) {
+		dispatch_userns_alert(ACTION_USERNS_CREATE,
+							  "unshare() - Direct Unprivileged");
+		return -EPERM;
+	}
+
+	/*
+	 * Ancestry Spoofing (SUID / Double-Fork)
+	 * The effective UID is 0, but the origin session belongs to a standard
+	 * user (e.g., UID 1000).
+	 */
+	if (login_uid != 0 && login_uid != 0xFFFFFFFF) {
+		dispatch_userns_alert(ACTION_USERNS_CREATE,
+							  "unshare() - SUID/Ancestry Evasion");
+		return -EPERM;
+	}
+
+	/*
+	 * SUID Proxy Fallback
+	 * The immediate parent was unprivileged. This acts as a fallback if
+	 * loginuid is unset due to host misconfiguration.
+	 */
+	if (parent_uid != 0 && parent_uid != 0xFFFFFFFF) {
+		dispatch_userns_alert(ACTION_USERNS_CREATE,
+							  "unshare() - SUID Proxy Fallback");
 		return -EPERM;
 	}
 
