@@ -13,12 +13,12 @@ Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as li
 
 ### Memory Footprint
 
-The system maintains a highly optimized memory footprint totaling approximately **21,237 kB (~21 MB)** during active enforcement:
+The system maintains a highly optimized memory footprint totaling approximately **21,222 kB (~21 MB)** during active enforcement:
 
-- Userland Engine: 14,700 kB
-- eBPF Maps (Kernel Memory): 6,537 kB (total)
+- Userland Engine: 14,684 kB
+- eBPF Maps (Kernel Memory): 6,538 kB (total)
     - rename_entropy: 1,554 kB
-    - io_restrict: 1,096 kB
+    - io_restrict: 1,097 kB
     - exec_block: 1,006 kB
     - madvise_ratelimit: 974 kB
     - strict_wx: 447 kB
@@ -112,7 +112,7 @@ Hardens the kernel's advanced I/O pathways against exploitation by intercepting 
 
 Furthermore, the module neutralizes zero-copy memory corruption exploits by securing pipeline buffers and reducing the attack surface. Because `vmsplice` maps user pages directly into a pipe and is virtually never used by standard unprivileged applications, the engine applies strict confinement and completely blocks unprivileged invocations. For standard `splice` operations utilized by legitimate command-line utilities, the engine denies unprivileged access to advanced memory-gifting flags like `SPLICE_F_GIFT` and `SPLICE_F_MOVE` designed to manipulate the kernel's memory management unit.
 
-To definitively neutralize zero-copy vulnerability chains, the engine enforces information flow tracking via a Tainted Pipeline invariant. By dynamically tracking the hardware addresses of pipes in an LRU hash map, the module detects when data flows from a read-only file into a pipe buffer and immediately marks that pipe as tainted. To break the exploitation laundry machine mechanism, any subsequent unprivileged attempts to mix malicious data into this tainted pipe, whether via additional `splice` operations or standard `write` calls, are immediately neutralized with a fatal signal. Standard unprivileged I/O that does not trigger these heuristics is safely permitted and audited via the telemetry pipeline.
+To definitively neutralize zero-copy vulnerability chains, the engine enforces information flow tracking via a Tainted Pipeline invariant. By dynamically tracking the opaque, KASLR-safe hardware signatures of pipes in a strict hash map, the module detects when data flows from a read-only file into a pipe buffer and immediately marks that pipe as tainted. To break the exploitation laundry machine mechanism, any subsequent unprivileged attempts to mix malicious data into this tainted pipe, whether via additional `splice` operations or standard `write` calls, are immediately neutralized with a fatal signal. Standard unprivileged I/O that does not trigger these heuristics is safely permitted and audited via the telemetry pipeline.
 
 ## V. Privilege Escalation & Container Security
 

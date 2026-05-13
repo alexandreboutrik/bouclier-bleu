@@ -66,6 +66,9 @@ impl IoRestrictAlert {
 const ACTION_IO_URING: u32 = 1;
 const ACTION_VMSPLICE: u32 = 2;
 const ACTION_SPLICE: u32 = 3;
+const ACTION_SPLICE_FLAGS: u32 = 4;
+const ACTION_SPLICE_TAINT: u32 = 5;
+const ACTION_MAP_EXHAUSTED: u32 = 6;
 
 /*
  * Defense Heuristic : I/O Confinement Monitor
@@ -98,13 +101,30 @@ define_security_module!(
 			ACTION_IO_URING => "ASYNC_IO_SETUP",
 			ACTION_VMSPLICE => "ZERO_COPY_VMSPLICE",
 			ACTION_SPLICE => "ZERO_COPY_SPLICE",
+			ACTION_SPLICE_FLAGS => "RESTRICTED_SPLICE_FLAGS",
+			ACTION_SPLICE_TAINT => "TAINTED_PIPELINE_VIOLATION",
+			ACTION_MAP_EXHAUSTED => "MAP_CAPACITY_EXHAUSTED",
 			_ => "UNKNOWN_IO_VIOLATION",
 		};
 
-		println!(
-			"Bouclier Bleu [BLOCK]: PID {} attempted restricted I/O primitive [{}] via {}.",
-			alert.pid, action_str, alert.syscall
-		);
+		/*
+		 * Telemetry Routing
+		 * We differentiate between active security blocks and systemic
+		 * warnings (like map exhaustion) to ensure SIEM operators can
+		 * distinguish between an ongoing exploit and a degraded visibility
+		 * state.
+		 */
+		if alert.action_type == ACTION_MAP_EXHAUSTED {
+			println!(
+				"Bouclier Bleu [WARN]: PID {} degraded visibility. Taint map full [{}] via {}.",
+				alert.pid, action_str, alert.syscall
+			);
+		} else {
+			println!(
+				"Bouclier Bleu [BLOCK]: PID {} attempted restricted I/O primitive [{}] via {}.",
+				alert.pid, action_str, alert.syscall
+			);
+		}
 	},
 	/*
 	 * Declarative Hardware-Backed Watchlist

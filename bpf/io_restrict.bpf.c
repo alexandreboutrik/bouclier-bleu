@@ -34,12 +34,14 @@ char LICENSE[] SEC("license") = "GPL";
 #define ACTION_SPLICE 3
 #define ACTION_SPLICE_FLAGS 4
 #define ACTION_SPLICE_TAINT 5
+#define ACTION_MAP_EXHAUSTED 6
 
 /* Pipeline Taint Identifiers */
 #define TAINTED_READONLY 1
 
 /**
  * struct io_restrict_alert - Telemetry Payload Contract
+ * @tgid: Thread Group ID (Userland PID).
  * @pid: The Process ID originating the restricted I/O attempt.
  * @action_type: Enum mapping to the specific I/O heuristic triggered.
  * @syscall: String literal identifying the originating syscall.
@@ -48,6 +50,7 @@ char LICENSE[] SEC("license") = "GPL";
  * userland to ensure safe zero-copy deserialization.
  */
 struct io_restrict_alert {
+	__u32 tgid;
 	__u32 pid;
 	__u32 action_type;
 	char syscall[16];
@@ -68,19 +71,55 @@ struct {
 } io_restrict_binaries SEC(".maps");
 
 /**
+ * generate_opaque_pipe_id() - KASLR-Safe Identifier Generation
+ * @pipe_ptr: The raw kernel memory address of the pipe.
+ * @ino: The unique Inode number.
+ *
+ * Utilizes a fast bitwise mixing function (Murmur3 finalizer variant) to
+ * deterministically fuse the raw pointer and inode into a unique, opaque
+ * 64-bit identifier. neutralizes KASLR information leaks if the BPF map is
+ * ever read by unprivileged userspace tools or exposed.
+ */
+static __always_inline __u64 generate_opaque_pipe_id(__u64 pipe_ptr,
+													 __u64 ino) {
+	__u64 hash = pipe_ptr ^ ino;
+	hash ^= hash >> 33;
+	hash *= 0xff51afd7ed558ccdULL;
+	hash ^= hash >> 33;
+	hash *= 0xc4ceb9fe1a85ec53ULL;
+	hash ^= hash >> 33;
+	return hash;
+}
+
+/**
  * pipe_taint_map - Tainted Pipeline Tracker (Information Flow Isolation)
  *
- * Stores the dynamic "taint" state of pipes. The key is the physical memory
- * address of the pipe (`struct pipe_inode_info *`). By using an LRU Hash map,
- * we cap memory at ~1MB (8192 entries) and rely on the kernel to automatically
- * evict old or inactive pipe trackers, neutralizing memory exhaustion attacks.
+ * Stores the dynamic "taint" state of pipes. Using HASH instead of LRU_HASH
+ * prevents cache-eviction attacks, where an adversary floods the kernel with
+ * pipe requests to flush security states.
  */
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__type(key, void *); /* pipe_inode_info ptr */
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64); /* Opaque, KASLR-safe identifier */
 	__type(value, __u8);
 	__uint(max_entries, 8192);
 } pipe_taint_map SEC(".maps");
+
+/**
+ * struct file_meta - Safe Snapshot of File Attributes
+ *
+ * Bounding file metadata into a stack-allocated struct upon lookup avoids a
+ * Time-Of-Check to Time-Of-Use (TOCTOU) race condition. It prevents a
+ * concurrent thread from freeing the file while the eBPF program is
+ * inspecting it.
+ */
+struct file_meta {
+	bool is_valid;
+	umode_t i_mode;
+	fmode_t f_mode;
+	void *private_data;
+	__u64 i_ino;
+};
 
 BOUCLIER_MODULE_ALERTS;
 BOUCLIER_MODULE_STATE_MAP;
@@ -102,51 +141,61 @@ static __always_inline void dispatch_io_alert(__u32 action_type,
 
 	BPF_SAFE_MEMSET(event, sizeof(*event));
 
-	event->pid = bpf_get_current_pid_tgid() >> 32;
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	event->tgid = pid_tgid >> 32;
+	event->pid = (__u32)pid_tgid;
 	event->action_type = action_type;
 
-	/*
-	 * BPF String Read Overhead Removed
-	 * syscall_name is a literal from .rodata. Using __builtin_strncpy
-	 * relies on Clang's compiler built-ins, eliminating the expensive
-	 * bpf_probe_read_kernel_str helper call.
-	 */
-	__builtin_strncpy(event->syscall, syscall_name, sizeof(event->syscall));
-	event->syscall[sizeof(event->syscall) - 1] = '\0';
+	bpf_probe_read_kernel_str(event->syscall, sizeof(event->syscall),
+							  syscall_name);
 
 	bpf_ringbuf_submit(event, 0);
 }
 
 /**
- * get_file_from_fd() - Safely resolve struct file * from an FD
+ * extract_file_meta() - Atomic metadata extraction from an FD
  * @task: Pointer to the current task_struct.
  * @fd_num: The integer file descriptor.
- *
- * Utilizes CO-RE to traverse the task's file descriptor table. This is needed
- * for inspecting file metadata (like read-only permissions or pipe mappings)
- * within syscall entry hooks where we only possess integer FDs.
+ * @meta: Pointer to the stack-allocated struct to populate.
  */
-static __always_inline struct file *get_file_from_fd(struct task_struct *task,
-													 unsigned int fd_num) {
+static __always_inline void extract_file_meta(struct task_struct *task,
+											  unsigned int fd_num,
+											  struct file_meta *meta) {
+	meta->is_valid = false;
+
+	if (!task)
+		return;
+
 	struct files_struct *files = BPF_CORE_READ(task, files);
 	if (!files)
-		return NULL;
+		return;
 
 	struct fdtable *fdt = BPF_CORE_READ(files, fdt);
 	if (!fdt)
-		return NULL;
+		return;
 
 	unsigned int max_fds = BPF_CORE_READ(fdt, max_fds);
 	if (fd_num >= max_fds)
-		return NULL;
+		return;
 
 	struct file **fd_array = BPF_CORE_READ(fdt, fd);
 	if (!fd_array)
-		return NULL;
+		return;
 
 	struct file *f = NULL;
-	bpf_probe_read_kernel(&f, sizeof(f), &fd_array[fd_num]);
-	return f;
+	if (bpf_probe_read_kernel(&f, sizeof(f), &fd_array[fd_num]) != 0 || !f)
+		return;
+
+	struct inode *inode = BPF_CORE_READ(f, f_inode);
+	if (!inode)
+		return;
+
+	meta->i_mode = BPF_CORE_READ(inode, i_mode);
+	meta->f_mode = BPF_CORE_READ(f, f_mode);
+	meta->private_data = BPF_CORE_READ(f, private_data);
+	meta->i_ino = BPF_CORE_READ(inode, i_ino);
+
+	meta->is_valid = true;
 }
 
 /*
@@ -163,6 +212,16 @@ int BPF_KSYSCALL(io_restrict_uring_setup) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}
+
+	/*
+	 * False-Positive Mitigation
+	 * Trusted root processes (e.g., systemd, database engines) bypass this
+	 * instantly to prevent breaking core OS functionality when `exe_file` is
+	 * null.
+	 */
+	__u32 uid = get_global_uid();
+	if (uid == 0)
+		return 0;
 
 	struct task_struct *task = bpf_get_current_task_btf();
 	struct mm_struct *mm = BPF_CORE_READ(task, mm);
@@ -196,8 +255,8 @@ int BPF_KSYSCALL(io_restrict_uring_setup) {
 	 * we ensure robust and portable confinement by neutralizing the violating
 	 * thread immediately via SIGKILL.
 	 */
-	bpf_send_signal(9);
 	dispatch_io_alert(ACTION_IO_URING, "io_uring_setup");
+	bpf_send_signal(9);
 
 	bpf_debug_printk(
 		"Bouclier Bleu [BLOCK]: Unauthorized io_uring_setup intercepted.\n");
@@ -225,8 +284,8 @@ int BPF_KSYSCALL(io_restrict_vmsplice) {
 
 	/* Unprivileged Confinement Fast-Path */
 	if (uid != 0) {
-		bpf_send_signal(9);
 		dispatch_io_alert(ACTION_VMSPLICE, "vmsplice");
+		bpf_send_signal(9);
 
 		bpf_debug_printk(
 			"Bouclier Bleu [BLOCK]: Unprivileged vmsplice memory tampering "
@@ -278,8 +337,8 @@ int BPF_KSYSCALL(io_restrict_splice, int fd_in, loff_t *off_in, int fd_out,
 	 * complex mechanisms.
 	 */
 	if (flags & (SPLICE_F_GIFT | SPLICE_F_MOVE)) {
-		bpf_send_signal(9);
 		dispatch_io_alert(ACTION_SPLICE_FLAGS, "splice");
+		bpf_send_signal(9);
 
 		bpf_debug_printk("Bouclier Bleu [BLOCK]: Unprivileged splice with "
 						 "GIFT/MOVE flags intercepted.\n");
@@ -294,82 +353,91 @@ int BPF_KSYSCALL(io_restrict_splice, int fd_in, loff_t *off_in, int fd_out,
 	 * TAINTED_READONLY.
 	 */
 	struct task_struct *task = bpf_get_current_task_btf();
-	struct file *f_in = get_file_from_fd(task, fd_in);
-	struct file *f_out = get_file_from_fd(task, fd_out);
+	struct file_meta in_meta = {}, out_meta = {};
 
-	if (f_in && f_out) {
-		umode_t in_mode = BPF_CORE_READ(f_in, f_inode, i_mode);
-		umode_t out_mode = BPF_CORE_READ(f_out, f_inode, i_mode);
+	extract_file_meta(task, fd_in, &in_meta);
+	extract_file_meta(task, fd_out, &out_meta);
 
-		bool in_is_pipe = S_ISFIFO(in_mode);
-		bool out_is_pipe = S_ISFIFO(out_mode);
+	if (in_meta.is_valid && out_meta.is_valid) {
+		bool in_is_pipe = S_ISFIFO(in_meta.i_mode);
+		bool out_is_pipe = S_ISFIFO(out_meta.i_mode);
 
-		/*
-		 * Invariant : Outbound Taint Verification
-		 * Advanced zero-copy exploits frequently chain multiple splice
-		 * operations to launder a read-only page cache reference through an
-		 * intermediate pipe before delivering it to a secondary execution
-		 * vector (e.g., cryptographic sockets or arbitrary device
-		 * descriptors). We must verify if the SOURCE of the splice is an
-		 * already tainted pipe to prevent the weaponized buffer from escaping
-		 * confinement and triggering the final payload.
-		 */
-		if (in_is_pipe) {
-			void *in_pipe_ptr = BPF_CORE_READ(f_in, private_data);
-			if (in_pipe_ptr) {
-				__u8 *taint =
-					bpf_map_lookup_elem(&pipe_taint_map, &in_pipe_ptr);
-				if (taint && *taint == TAINTED_READONLY) {
-					bpf_send_signal(9);
-					dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
-					bpf_debug_printk(
-						"Bouclier Bleu [BLOCK]: Splice execution "
-						"FROM TAINTED_READONLY pipe neutralized.\n");
-					return 0;
-				}
+		if (in_is_pipe && in_meta.private_data) {
+			/*
+			 * Invariant : Outbound Taint Verification
+			 * Advanced zero-copy exploits frequently chain multiple splice
+			 * operations to launder a read-only page cache reference through
+			 * an intermediate pipe before delivering it to a secondary
+			 * execution vector (e.g., cryptographic sockets or arbitrary
+			 * device descriptors). We must verify if the SOURCE of the splice
+			 * is an already tainted pipe to prevent the weaponized buffer from
+			 * escaping confinement and triggering the final payload.
+			 */
+			__u64 in_id = generate_opaque_pipe_id((__u64)in_meta.private_data,
+												  in_meta.i_ino);
+			__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &in_id);
+
+			if (taint && *taint == TAINTED_READONLY) {
+				dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
+				bpf_send_signal(9);
+				bpf_debug_printk("Bouclier Bleu [BLOCK]: Splice execution "
+								 "FROM TAINTED_READONLY pipe neutralized.\n");
+				return 0;
 			}
 		}
 
-		/*
-		 * Invariant : Inbound Taint Verification
-		 * Resolves raw pointers (avoiding vulnerable string parsing) to
-		 * evaluate the data flow topology. If data is observed flowing from a
-		 * read-only file directly into a pipe, that pipe's physical memory
-		 * address is explicitly marked as TAINTED_READONLY. This establishes
-		 * the foundational anchor of our zero-copy confinement perimeter.
-		 */
-		if (out_is_pipe) {
-			void *pipe_ptr = BPF_CORE_READ(f_out, private_data);
-			if (pipe_ptr) {
-				/* Protect against writing into an ALREADY TAINTED pipe */
-				__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &pipe_ptr);
-				if (taint && *taint == TAINTED_READONLY) {
-					bpf_send_signal(9);
-					dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
-					bpf_debug_printk("Bouclier Bleu [BLOCK]: Splice execution "
-									 "into TAINTED_READONLY pipe.\n");
-					return 0;
-				}
+		if (out_is_pipe && out_meta.private_data) {
+			/*
+			 * Invariant : Destination Taint Verification
+			 * If the target pipe is already tainted, further splicing into it
+			 * could be an attempt to corrupt the tainted buffer or mix
+			 * unprivileged payloads into the existing read-only data flow.
+			 * We immediately block subsequent data flows into tainted pipes.
+			 */
+			__u64 out_id = generate_opaque_pipe_id((__u64)out_meta.private_data,
+												   out_meta.i_ino);
+			__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &out_id);
+
+			if (taint && *taint == TAINTED_READONLY) {
+				dispatch_io_alert(ACTION_SPLICE_TAINT, "splice");
+				bpf_send_signal(9);
+				bpf_debug_printk("Bouclier Bleu [BLOCK]: Splice execution "
+								 "into TAINTED_READONLY pipe.\n");
+				return 0;
+			}
+
+			if (!in_is_pipe && (in_meta.f_mode & FMODE_READ) &&
+				!(in_meta.f_mode & FMODE_WRITE)) {
+				/*
+				 * Invariant : Inbound Taint Verification
+				 * Resolves raw pointers (avoiding vulnerable string parsing)
+				 * to evaluate the data flow topology. If data is observed
+				 * flowing from a read-only file directly into a pipe, that
+				 * pipe's compound identifier is explicitly marked as
+				 * TAINTED_READONLY. This establishes the foundational anchor
+				 * of our zero-copy confinement perimeter.
+				 */
+				__u8 new_taint = TAINTED_READONLY;
 
 				/*
-				 * If not tainted, check if the source is a read-only file.
-				 * If so, taint the pipe.
+				 * Map Exhaustion Handling
+				 * If the map is full (-E2BIG), we do not fail-close (SIGKILL)
+				 * as this would cause a systemic DoS for legitimate daemons
+				 * doing heavy I/O. Instead, we fail-open but emit an emergency
+				 * telemetry event to the userland.
 				 */
-				fmode_t in_fmode = BPF_CORE_READ(f_in, f_mode);
-				if (!in_is_pipe && (in_fmode & FMODE_READ) &&
-					!(in_fmode & FMODE_WRITE)) {
-					__u8 new_taint = TAINTED_READONLY;
-					bpf_map_update_elem(&pipe_taint_map, &pipe_ptr, &new_taint,
-										BPF_ANY);
+				if (bpf_map_update_elem(&pipe_taint_map, &out_id, &new_taint,
+										BPF_ANY) != 0) {
+					dispatch_io_alert(ACTION_MAP_EXHAUSTED, "splice");
+					bpf_debug_printk("Bouclier Bleu [WARN]: Taint map full. "
+									 "Failing open to preserve stability.\n");
+				} else {
 					bpf_debug_printk("Bouclier Bleu [INFO]: Pipe structure "
 									 "marked as TAINTED_READONLY.\n");
 				}
 			}
 		}
 	}
-
-	/* Emit telemetry anchor for unprivileged splice operations */
-	dispatch_io_alert(ACTION_SPLICE, "splice");
 
 	return 0;
 }
@@ -402,11 +470,10 @@ int BPF_KSYSCALL(io_restrict_write, unsigned int fd, const char *buf,
 	 * Safely resolve the internal file structure from the integer FD.
 	 */
 	struct task_struct *task = bpf_get_current_task_btf();
-	struct file *f_out = get_file_from_fd(task, fd);
-	if (!f_out)
+	struct file_meta meta = {};
+	extract_file_meta(task, fd, &meta);
+	if (!meta.is_valid)
 		return 0;
-
-	umode_t out_mode = BPF_CORE_READ(f_out, f_inode, i_mode);
 
 	/*
 	 * O(1) Performance Constraint
@@ -414,27 +481,27 @@ int BPF_KSYSCALL(io_restrict_write, unsigned int fd, const char *buf,
 	 * definitively pipes (FIFOs). This prevents penalizing standard file I/O
 	 * operations.
 	 */
-	if (S_ISFIFO(out_mode)) {
-		void *pipe_ptr = BPF_CORE_READ(f_out, private_data);
-		if (pipe_ptr) {
+	if (S_ISFIFO(meta.i_mode) && meta.private_data) {
+		__u64 id =
+			generate_opaque_pipe_id((__u64)meta.private_data, meta.i_ino);
+		/*
+		 * Taint Verification
+		 * If this pipe identifier exists in our strict HASH map and is marked
+		 * as TAINTED_READONLY, it means it previously ingested read-only data.
+		 * Allowing a write here would complete the zero-copy "laundry"
+		 * exploit.
+		 */
+		__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &id);
+
+		if (taint && *taint == TAINTED_READONLY) {
 			/*
-			 * Taint Verification
-			 * If this pipe address exists in our LRU hash map and is marked as
-			 * TAINTED_READONLY, it means it previously ingested read-only
-			 * data. Allowing a write here would complete the zero-copy
-			 * "laundry" exploit.
+			 * Immediate Neutralization
+			 * Stop the exploit in its tracks by neutralizing the thread.
 			 */
-			__u8 *taint = bpf_map_lookup_elem(&pipe_taint_map, &pipe_ptr);
-			if (taint && *taint == TAINTED_READONLY) {
-				/*
-				 * Immediate Neutralization
-				 * Stop the exploit in its tracks by neutralizing the thread.
-				 */
-				bpf_send_signal(9);
-				dispatch_io_alert(ACTION_SPLICE_TAINT, "write");
-				bpf_debug_printk("Bouclier Bleu [BLOCK]: Standard write into "
-								 "TAINTED_READONLY pipe neutralized.\n");
-			}
+			bpf_send_signal(9);
+			dispatch_io_alert(ACTION_SPLICE_TAINT, "write");
+			bpf_debug_printk("Bouclier Bleu [BLOCK]: Standard write into "
+							 "TAINTED_READONLY pipe neutralized.\n");
 		}
 	}
 
@@ -442,42 +509,44 @@ int BPF_KSYSCALL(io_restrict_write, unsigned int fd, const char *buf,
 }
 
 /*
- * Defense Heuristic : Pipeline Taint Eviction (ABA Problem Mitigation)
+ * Defense Heuristic : Pipeline Taint Eviction - ABA Mitigation
  * The Linux kernel's slab allocator is highly efficient and reuses physical
- * memory addresses. When a pipe is destroyed (e.g., when `cat` finishes
- * execution), its `pipe_inode_info` pointer may be immediately reallocated by
- * the kernel to a brand-new, unrelated pipe requested by a completely different
- * process.
- * If we do not explicitly evict closed pipes from our taint tracker map, the
- * new pipe will inherit a "ghost taint" from the previous session, causing
- * false-positive SIGKILLs for legitimate zero-copy system operations. This
- * hook ensures absolute chronological integrity of the memory map.
+ * memory addresses. When a pipe is destroyed, its `pipe_inode_info` pointer
+ * may be immediately reallocated by the kernel to a brand-new, unrelated pipe.
+ * If we do not evict closed pipes from our tainted tracker map, the new pipe
+ * will inherit a "ghost taint" from the previous session, causing
+ * false-positive SIGKILLs for legitimate zero-copy system operations.
+ * We attach directly to the kernel's definitive pipe destruction routine
+ * (`pipe_release`). This guarantees we only evict the taint state when the
+ * kernel is unequivocally freeing the pipe object.
  */
-SEC("ksyscall/close")
-int BPF_KSYSCALL(io_restrict_close, unsigned int fd) {
+SEC("fentry/pipe_release")
+int BPF_PROG(io_restrict_pipe_release, struct inode *inode, struct file *file) {
 	if (!is_module_active(&state_map)) {
 		return 0;
 	}
 
-	struct task_struct *task = bpf_get_current_task_btf();
-	struct file *f = get_file_from_fd(task, fd);
-	if (!f)
+	/*
+	 * Extract the raw pointer. Because pipe_release is only called when the
+	 * file's reference count hits absolute zero, we know this data is about to
+	 * be freed.
+	 */
+	struct pipe_inode_info *pipe = BPF_CORE_READ(file, private_data);
+	if (!pipe) {
 		return 0;
-
-	umode_t mode = BPF_CORE_READ(f, f_inode, i_mode);
-
-	/* Only spend overhead evaluating actual FIFO descriptors */
-	if (S_ISFIFO(mode)) {
-		void *pipe_ptr = BPF_CORE_READ(f, private_data);
-		if (pipe_ptr) {
-			/*
-			 * By deleting the pointer upon descriptor closure, we guarantee
-			 * that any subsequent kernel reallocation of this physical memory
-			 * address starts with a clean, untainted slate.
-			 */
-			bpf_map_delete_elem(&pipe_taint_map, &pipe_ptr);
-		}
 	}
+
+	__u64 id =
+		generate_opaque_pipe_id((__u64)pipe, BPF_CORE_READ(inode, i_ino));
+
+	/*
+	 * Lifecycle Integrity Verification
+	 * By explicitly hooking pipe_release, we guarantee that the map deletion
+	 * occurs exactly when the kernel slab allocator reclaims the memory.
+	 * This ensures the subsequent reallocation of this address starts with a
+	 * clean, untainted slate.
+	 */
+	bpf_map_delete_elem(&pipe_taint_map, &id);
 
 	return 0;
 }

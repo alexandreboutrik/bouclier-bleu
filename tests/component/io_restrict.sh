@@ -214,7 +214,7 @@ EOF
 function verify_unauthorized_iouring() {
 	echo "  [*] Validating Unauthorized io_uring_setup (Expected: BLOCK)..."
 	set +e
-	"${TEST_UNAUTH_BIN}" uring >/dev/null 2>&1
+	su - "${TEST_USER}" -c "${TEST_UNAUTH_BIN} uring" >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
