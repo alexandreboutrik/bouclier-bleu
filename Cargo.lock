@@ -477,6 +477,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+ "toml",
  "walkdir",
  "xattr",
 ]

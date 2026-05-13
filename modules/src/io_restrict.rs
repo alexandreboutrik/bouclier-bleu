@@ -137,5 +137,43 @@ define_security_module!(
 		map_name: "io_restrict_binaries",
 		attribute: "user.bouclier.io_restrict",
 		target_paths: ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/opt"]
+	},
+	capacities: || {
+		let mut caps = std::collections::HashMap::new();
+
+		let default_size = 8192; // fallback baseline
+		let mut pipe_map_size = default_size;
+
+		// Read and parse configuration using a flattened closure
+		let extracted_size = (|| -> Option<u32> {
+			let config_str = std::fs::read_to_string("/etc/bouclier-bleu/config.toml").ok()?;
+			let config = config_str.parse::<toml::Value>().ok()?;
+
+			let size = config
+				.get("modules")?
+				.get("io_restrict_map_size")?
+				.as_integer()?;
+
+			Some(size as u32)
+		})();
+
+		/*
+		 * Exhaustion Constraint
+		 * Enforce a strict minimum of 1024 to prevent a typo in
+		 * the config file (e.g., size = 0) from crashing the eBPF
+		 * map initialization or causing kernel panics.
+		 */
+		if let Some(size) = extracted_size {
+			pipe_map_size = size.max(1024);
+		}
+
+		println!(
+			"Bouclier Bleu [Setup]: Scaling pipe_taint_map to {} entries based on configuration.",
+			pipe_map_size
+		);
+
+		// 3. Inject the calculated capacity into the eBPF loader sequence
+		caps.insert("pipe_taint_map".to_string(), pipe_map_size);
+		caps
 	}
 );

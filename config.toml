@@ -81,6 +81,7 @@ mount_secure = true
 # Restricts advanced asynchronous I/O (io_uring) and zero-copy pipelines 
 # (splice/vmsplice) to neutralize ransomware and privilege escalation.
 # io_restrict = false
+# io_restrict_map_size = 32768 # Dynamic map sizing for pipe_taint_map
 
 # -----------------------------------------------------------------------------
 # V. Privilege Escalation & Container Security
