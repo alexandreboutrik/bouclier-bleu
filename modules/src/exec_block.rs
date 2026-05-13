@@ -14,10 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::common::fs_utils::{build_secure_walker, get_secure_hardware_key};
-use crate::common::traits::{BpfReader, MapProvider};
+use crate::common::traits::BpfReader;
 use crate::define_security_module;
-use libbpf_rs::MapCore;
 
 /// Telemetry payload yielded by the `exec_block` BPF hook.
 ///
@@ -53,7 +51,7 @@ impl ExecAlert {
 }
 
 /*
- * DEFENSE HEURISTIC: WORLD-WRITABLE EXECUTION BLOCK
+ * Defense Heuristic : World-Writable Execution Block
  * Memory corruption exploits and web-shell droppers frequently lack the
  * privileges required to write to protected directories (/usr/bin). They rely
  * on world-writable paths (/tmp, /dev/shm) to stage secondary payloads.
@@ -83,74 +81,12 @@ define_security_module!(
 			alert.pid, alert.path
 		);
 	},
-	capacities: || -> std::collections::HashMap<String, u32> {
-		/*
-		 * JUST-IN-TIME (JIT) PROTECTED_DIRS MAP SIZING HEURISTIC
-		 * To maintain a lightweight EDR footprint, we perform a rapid pre-scan
-		 * of the target world-writable directories before instructing the
-		 * kernel to allocate memory. We apply a 1.25x scaling factor (25%
-		 * safety buffer) to accommodate future directory creations during the
-		 * system's uptime.
-		 */
-		let mut count = 0;
-		let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
-
-		for path in target_paths {
-
-			let safe_walker = build_secure_walker(path);
-
-			for entry in safe_walker {
-				match entry {
-					Ok(e) => {
-						if e.file_type().is_dir() {
-							count += 1;
-						}
-					}
-					Err(e) => {
-						if e.io_error().map(|io| io.kind() == std::io::ErrorKind::PermissionDenied).unwrap_or(false) {
-							eprintln!("Bouclier Bleu [Warning]: Permission denied traversing {}: {}", path, e);
-						}
-					   }
-				   }
-			   }
-		}
-
-		// Apply a 25% safety buffer for new directories, with an absolute
-		// minimum of 8192
-		let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
-
-		let mut caps = std::collections::HashMap::new();
-		caps.insert("protected_dirs".to_string(), safe_capacity);
-		caps
-	},
-	init: |provider: &dyn MapProvider| -> Result<(), String> {
-		let bpf_map = provider.get_map("protected_dirs")?;
-
-		let target_paths = ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"];
-		let is_protected: [u8; 1] = [1];
-
-		/*
-		 * Hardware-backed Directory Watchlist Initialization
-		 * Threat Model: Advanced adversaries routinely use mount namespaces
-		 * (`unshare -m`) or bind-mounts to obfuscate paths and bypass
-		 * string-matching security heuristics. To neutralize this, the
-		 * userland daemon resolves the exact physical `inode` of
-		 * world-writable directories at boot. These hardware-level identifiers
-		 * are passed to the kernel via the `protected_dirs` eBPF Map.
-		 */
-		for path in target_paths {
-			println!("Bouclier Bleu [Setup]: Recursively indexing volatile path {}...", path);
-
-			let safe_walker = build_secure_walker(path);
-
-			for entry in safe_walker.filter_map(|e| e.ok()) {
-				// System-level Inode Extraction
-				if let Ok(key_bytes) = get_secure_hardware_key(entry.path()) {
-					bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-						.map_err(|e| format!("CRITICAL: Map update failed for {}: {}", entry.path().display(), e))?;
-				}
-			}
-		}
-		Ok(())
+	dynamic_watchlist: {
+		map_name: "protected_dirs",
+		target_paths: ["/tmp", "/var/tmp", "/dev/shm", "/var/crash", "/dev/mqueue", "/run/user"],
+		entry_type: crate::common::fs_utils::EntryType::Directory,
+		min_capacity: 8192,
+		ignore_hidden: false,
+		allow_hidden: []
 	}
 );

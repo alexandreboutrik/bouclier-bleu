@@ -61,6 +61,14 @@ macro_rules! define_security_module {
             attribute: $attribute:expr,
             target_paths: [$($target_paths:expr),*]
         })?
+        $(, dynamic_watchlist: {
+            map_name: $d_map_name:expr,
+            target_paths: [$($d_target_paths:expr),*],
+            entry_type: $d_entry_type:expr,
+            min_capacity: $d_min_capacity:expr,
+            ignore_hidden: $d_ignore_hidden:expr,
+            allow_hidden: [$($d_allow_hidden:expr),*]
+        })?
         $(, capacities: $capacities_closure:expr)?
         $(, init: $init_closure:expr)?
     ) => {
@@ -157,8 +165,22 @@ macro_rules! define_security_module {
                 // Auto-generate capacity from the declarative xattr_watchlist
                 $(
                     let paths = [$($target_paths),*];
-                    let capacity = $crate::common::fs_utils::calculate_watchlist_capacity(&paths);
+                    let capacity = $crate::common::fs_utils::calculate_dynamic_capacity(&paths, $crate::common::fs_utils::EntryType::File, 2048, false, &[]);
                     _caps.insert($map_name.to_string(), capacity);
+                )?
+
+                // Auto-generate capacity from the declarative dynamic_watchlist
+                $(
+                    let d_paths = [$($d_target_paths),*];
+                    let d_allow = [$($d_allow_hidden),*];
+                    let d_capacity = $crate::common::fs_utils::calculate_dynamic_capacity(
+                        &d_paths,
+                        $d_entry_type,
+                        $d_min_capacity,
+                        $d_ignore_hidden,
+                        &d_allow
+                    );
+                    _caps.insert($d_map_name.to_string(), d_capacity);
                 )?
 
                 // Append/Override with custom capacities closure (if provided)
@@ -185,6 +207,22 @@ macro_rules! define_security_module {
                     // Delegate to the pure-Rust filesystem abstraction to
                     // maintain the safe boundary
                     $crate::common::fs_utils::populate_map_from_xattr(&map, &paths, $attribute, $slug)?;
+                )?
+
+                // Auto-populate from the declarative dynamic_watchlist
+                $(
+                    let d_map = _provider.get_map($d_map_name)?;
+                    let d_paths = [$($d_target_paths),*];
+                    let d_allow = [$($d_allow_hidden),*];
+
+                    $crate::common::fs_utils::populate_map_from_paths(
+                        &d_map,
+                        &d_paths,
+                        $d_entry_type,
+                        $d_ignore_hidden,
+                        &d_allow,
+                        $slug
+                    )?;
                 )?
 
                 // Execute custom initialization closures (if provided)

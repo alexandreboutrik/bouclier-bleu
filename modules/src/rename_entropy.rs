@@ -14,10 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::common::fs_utils::{build_secure_walker, get_secure_hardware_key};
-use crate::common::traits::{BpfReader, MapProvider};
+use crate::common::traits::BpfReader;
 use crate::define_security_module;
-use libbpf_rs::MapCore;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -154,7 +152,7 @@ fn neutralize_threat_tree(target_ppid: u32) {
 }
 
 /*
- * DEFENSE HEURISTIC: HIGH-ENTROPY RANSOMWARE RENAMING
+ * Defense Heuristic : High-Entropy Ransomware Renaming
  * Ransomware families dynamically rename files with high-entropy, randomized
  * extensions (e.g., `.locked_xyz123`) or pure base-64 strings post-encryption.
  * While the eBPF kernel hook atomically blocks the operation (`-EPERM`) and
@@ -211,11 +209,13 @@ define_security_module!(
 		let now = Instant::now();
 
 		/*
-		 * FIXME: Forwarding to standard output for PoC.
-		 * Production iterations should forward this object to a SIEM
-		 * connector or trigger automated host-isolation protocols.
+		 * Operator Alerting - Telemetry Sink
+		 * SIEM forwarding (NDJSON) is already handled upstream by the prior to
+		 * this localized handler. Here, we output a high-visibility alert to
+		 * the daemon's standard error for local logging frameworks (e.g.,
+		 * journald).
 		 */
-		println!(
+		eprintln!(
 			"Bouclier Bleu [FATAL]: PID {} triggered ransomware entropy heuristic on target: {}",
 			alert.pid, alert.full_path
 		);
@@ -255,96 +255,13 @@ define_security_module!(
 			}
 		}
 	},
-	capacities: || -> std::collections::HashMap<String, u32> {
-		/*
-		 * JUST-IN-TIME (JIT) PROTECTED_DIRS MAP SIZING HEURISTIC
-		 * To maintain a lightweight EDR footprint, we perform a rapid pre-scan
-		 * of the filesystem before instructing the kernel to allocate memory.
-		 * We apply a 1.25x scaling factor (25% safety buffer) to accommodate
-		 * future directory creations during the system's uptime. Because the
-		 * Linux VFS layer heavily caches dentries, this initial pass pulls the
-		 * directory metadata from disk to RAM, dramatically accelerating the
-		 * subsequent `init` population pass and practically nullifying any
-		 * perceived performance penalty of the double-loop.
-		 */
-		let mut count = 0;
-		let target_paths = ["/home", "/var", "/etc", "/opt"];
-		let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
-
-		for path in target_paths {
-			let walker = build_secure_walker(path).filter_entry(|e| {
-				let fname = e.file_name().to_string_lossy();
-				if !fname.starts_with('.') { return true; }
-				critical_hidden.contains(&fname.as_ref())
-			});
-
-			for entry in walker.filter_map(|e| e.ok()) {
-				if entry.file_type().is_dir() {
-					count += 1;
-				}
-			}
-		}
-
-		// Apply a 25% safety buffer for new directories, with an absolute
-		// minimum of 8192
-		let safe_capacity = ((count as f64 * 1.25) as u32).max(8192);
-
-		let mut caps = std::collections::HashMap::new();
-		caps.insert("protected_dirs".to_string(), safe_capacity);
-		caps
-	},
-	init: |provider: &dyn MapProvider| -> Result<(), String> {
-		let bpf_map = provider.get_map("protected_dirs")?;
-
-		let target_paths = ["/home", "/var", "/etc", "/opt"];
-		let is_protected: [u8; 1] = [1];
-
-		/*
-		 * Hardware-backed Directory Watchlist Initialization
-		 * Advanced adversaries routinely use mount namespaces (`unshare -m`)
-		 * or bind-mounts to obfuscate paths and bypass string-matching
-		 * security heuristics. To neutralize this, the userland daemon
-		 * resolves the exact physical `inode` of target directories at boot.
-		 * These hardware-level identifiers are passed to the kernel via the
-		 * `protected_dirs` eBPF Map. The kernel hook then performs validation
-		 * against the inode that is entirely immune to namespace manipulation.
-		 */
-		for path in target_paths {
-			println!("Bouclier Bleu [Setup]: Recursively indexing {}...", path);
-
-			// Optimization & Constraint Management
-			// The eBPF hash map has a strict maximum entry limit (1,048,576).
-			// To prevent capacity exhaustion and optimize lookup latency, we
-			// proactively filter out hidden directories (e.g., `~/.cache`,
-			// `~/.mozilla`) which generally contain high-churn, benign files
-			// that do not require strict ransomware entropy monitoring.
-			let critical_hidden = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"];
-			let walker = build_secure_walker(path)
-				.filter_entry(move |e| {
-					let file_name = e.file_name().to_string_lossy();
-
-					if !file_name.starts_with('.') {
-						return true;
-					}
-
-					critical_hidden.contains(&file_name.as_ref())
-				});
-
-			for entry in walker.filter_map(|e| e.ok()) {
-				// System-level Inode Extraction
-				// We strictly index directories because the `rename` syscall's
-				// `new_dir` parameter provided to the LSM hook points to the
-				// destination directory's inode structure, not the individual
-				// file itself.
-				if let Ok(key_bytes) = get_secure_hardware_key(entry.path()) {
-					bpf_map.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
-						.map_err(|e| format!("Failed to update map for {}: {}", entry.path().display(), e))?;
-				}
-			}
-
-			println!("Bouclier Bleu [Setup]: Protected {} and all subdirectories.", path);
-		}
-		Ok(())
+	dynamic_watchlist: {
+		map_name: "protected_dirs",
+		target_paths: ["/home", "/var", "/etc", "/opt"],
+		entry_type: crate::common::fs_utils::EntryType::Directory,
+		min_capacity: 8192,
+		ignore_hidden: true,
+		allow_hidden: [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config"]
 	}
 );
 

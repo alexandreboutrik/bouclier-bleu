@@ -21,6 +21,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use xattr::FileExt;
 
+/// Abstraction for declarative target filtering.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntryType {
+	File,
+	Directory,
+}
+
 /// Secure Filesystem Traversal Builder
 ///
 /// Standardizes directory scanning across all security modules. Enforces a
@@ -89,6 +96,114 @@ pub fn get_secure_hardware_key<P: AsRef<Path>>(path: P) -> std::io::Result<[u8; 
 
 	let metadata = file.metadata()?;
 	Ok(generate_hardware_key(&metadata))
+}
+
+/// Declarative Helper: Generalized Map Sizing Heuristic
+///
+/// Traverses the provided system paths to establish a precise upper bound
+/// for the BPF Map allocation before loading the eBPF program, avoiding
+/// severe `RLIMIT_MEMLOCK` overheads from hardcoded worst-case scenarios.
+/// Applies a 1.25x (25%) safety buffer for future allocations. Because the
+/// Linux VFS layer heavily caches dentries, this initial pass pulls the
+/// metadata from disk to RAM, dramatically accelerating the subsequent
+/// `init` population pass.
+pub fn calculate_dynamic_capacity(
+	target_paths: &[&str],
+	entry_type: EntryType,
+	min_capacity: u32,
+	ignore_hidden: bool,
+	allow_hidden: &[&str],
+) -> u32 {
+	let mut count = 0;
+	for path in target_paths {
+		let walker = build_secure_walker(path).filter_entry(|e| {
+			if !ignore_hidden {
+				return true;
+			}
+			let fname = e.file_name().to_string_lossy();
+			if !fname.starts_with('.') {
+				return true;
+			}
+			allow_hidden.contains(&fname.as_ref())
+		});
+
+		for entry in walker.filter_map(|e| e.ok()) {
+			let is_match = match entry_type {
+				EntryType::File => entry.file_type().is_file(),
+				EntryType::Directory => entry.file_type().is_dir(),
+			};
+			if is_match {
+				count += 1;
+			}
+		}
+	}
+	((count as f64 * 1.25) as u32).max(min_capacity)
+}
+
+/// Declarative Helper: Generalized Hardware-backed Watchlist Setup
+///
+/// Scans system paths and populates a BPF map. Advanced adversaries routinely
+/// use mount namespaces (`unshare -m`) or bind-mounts to obfuscate paths and
+/// bypass string-matching security heuristics. To neutralize this, this engine
+/// resolves the exact physical `inode` of target paths at boot.
+pub fn populate_map_from_paths(
+	bpf_map: &libbpf_rs::Map<'_>,
+	target_paths: &[&str],
+	entry_type: EntryType,
+	ignore_hidden: bool,
+	allow_hidden: &[&str],
+	module_slug: &str,
+) -> Result<(), String> {
+	let is_protected: [u8; 1] = [1];
+
+	for path in target_paths {
+		println!(
+			"Bouclier Bleu [Setup]: Recursively indexing path {} for {}...",
+			path, module_slug
+		);
+
+		/*
+		 * Optimization & Constraint Management
+		 * The eBPF hash map has strict capacity limits. By optionally
+		 * filtering hidden directories (e.g., `~/.cache`), we prevent capacity
+		 * exhaustion and optimize lookup latency for paths that contain
+		 * high-churn, benign files that do not require strict monitoring.
+		 */
+		let walker = build_secure_walker(path).filter_entry(|e| {
+			if !ignore_hidden {
+				return true;
+			}
+			let file_name = e.file_name().to_string_lossy();
+			if !file_name.starts_with('.') {
+				return true;
+			}
+			allow_hidden.contains(&file_name.as_ref())
+		});
+
+		for entry in walker.filter_map(|e| e.ok()) {
+			let is_match = match entry_type {
+				EntryType::File => entry.file_type().is_file(),
+				EntryType::Directory => entry.file_type().is_dir(),
+			};
+
+			if !is_match {
+				continue;
+			}
+
+			if let Ok(key_bytes) = get_secure_hardware_key(entry.path()) {
+				bpf_map
+					.update(&key_bytes, &is_protected, libbpf_rs::MapFlags::ANY)
+					.map_err(|e| {
+						format!(
+							"CRITICAL: Map update failed for {}: {}",
+							entry.path().display(),
+							e
+						)
+					})?;
+			}
+		}
+	}
+	Ok(())
 }
 
 /// Declarative Helper: JIT Map Sizing Heuristic
