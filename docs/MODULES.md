@@ -9,7 +9,7 @@
 
 Security shouldn't bottleneck your system. We designed Bouclier Bleu to be as lightweight and performant as possible. Depending on the module and how often a syscall is triggered, the interception overhead typically adds 3ms to 8ms (tested on a Dell Rugged 5424: i5-8350u, NVMe SSD).
 
-`Bouclier Bleu` currently operates across **32 eBPF hooks**, driving **10 active security detectors** (modules) that map directly to **19 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **91 automated tests**, encompassing 19 unit, 65 component, 3 integration, and 4 benchmark validation pipelines.
+`Bouclier Bleu` currently operates across **33 eBPF hooks**, driving **10 active security detectors** (modules) that map directly to **19 MITRE ATT&CK techniques**. Its stability and regression prevention are guaranteed by a suite of **91 automated tests**, encompassing 19 unit, 65 component, 3 integration, and 4 benchmark validation pipelines.
 
 ### Memory Footprint
 
@@ -108,7 +108,7 @@ Prevents physical USB drops or rogue SD cards from executing binaries or establi
 > [!WARNING]  
 > This module operates in a **strict default-deny posture** for asynchronous I/O. To prevent legitimate high-performance daemons from being terminated upon initializing an `io_uring` context, administrators must explicitly authorize compiled binaries by applying the `user.bouclier.io_restrict=1` extended attribute prior to enabling the module.
 
-Hardens the kernel's advanced I/O pathways against exploitation by intercepting `io_uring_setup`, `vmsplice`, `splice`, and `write` syscalls. To disarm high-speed ransomware encryption phases, the engine enforces an aggressive default-deny posture on asynchronous I/O. It restricts the instantiation of `io_uring` rings exclusively to explicitly authorized high-performance binaries mapped via a hardware-backed extended attribute whitelist. This effectively strips dropped ransomware payloads of the ability to maximize storage throughput, forcing them to utilize slow and easily intercepted synchronous I/O.
+Hardens the kernel's advanced I/O pathways against exploitation by intercepting `io_uring_setup`, `vmsplice`, `splice`, and `write`/`close` syscalls. To disarm high-speed ransomware encryption phases, the engine enforces an aggressive default-deny posture on asynchronous I/O. It restricts the instantiation of `io_uring` rings exclusively to explicitly authorized high-performance binaries mapped via a hardware-backed extended attribute whitelist. This effectively strips dropped ransomware payloads of the ability to maximize storage throughput, forcing them to utilize slow and easily intercepted synchronous I/O.
 
 Furthermore, the module neutralizes zero-copy memory corruption exploits by securing pipeline buffers and reducing the attack surface. Because `vmsplice` maps user pages directly into a pipe and is virtually never used by standard unprivileged applications, the engine applies strict confinement and completely blocks unprivileged invocations. For standard `splice` operations utilized by legitimate command-line utilities, the engine denies unprivileged access to advanced memory-gifting flags like `SPLICE_F_GIFT` and `SPLICE_F_MOVE` designed to manipulate the kernel's memory management unit.
 

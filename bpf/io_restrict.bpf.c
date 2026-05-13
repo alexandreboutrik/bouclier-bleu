@@ -440,3 +440,44 @@ int BPF_KSYSCALL(io_restrict_write, unsigned int fd, const char *buf,
 
 	return 0;
 }
+
+/*
+ * Defense Heuristic : Pipeline Taint Eviction (ABA Problem Mitigation)
+ * The Linux kernel's slab allocator is highly efficient and reuses physical
+ * memory addresses. When a pipe is destroyed (e.g., when `cat` finishes
+ * execution), its `pipe_inode_info` pointer may be immediately reallocated by
+ * the kernel to a brand-new, unrelated pipe requested by a completely different
+ * process.
+ * If we do not explicitly evict closed pipes from our taint tracker map, the
+ * new pipe will inherit a "ghost taint" from the previous session, causing
+ * false-positive SIGKILLs for legitimate zero-copy system operations. This
+ * hook ensures absolute chronological integrity of the memory map.
+ */
+SEC("ksyscall/close")
+int BPF_KSYSCALL(io_restrict_close, unsigned int fd) {
+	if (!is_module_active(&state_map)) {
+		return 0;
+	}
+
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct file *f = get_file_from_fd(task, fd);
+	if (!f)
+		return 0;
+
+	umode_t mode = BPF_CORE_READ(f, f_inode, i_mode);
+
+	/* Only spend overhead evaluating actual FIFO descriptors */
+	if (S_ISFIFO(mode)) {
+		void *pipe_ptr = BPF_CORE_READ(f, private_data);
+		if (pipe_ptr) {
+			/*
+			 * By deleting the pointer upon descriptor closure, we guarantee
+			 * that any subsequent kernel reallocation of this physical memory
+			 * address starts with a clean, untainted slate.
+			 */
+			bpf_map_delete_elem(&pipe_taint_map, &pipe_ptr);
+		}
+	}
+
+	return 0;
+}
