@@ -192,7 +192,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "clap",
 ]
@@ -205,7 +205,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "libbpf-cargo",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "modules"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "libbpf-rs",
  "rustix",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.11.1"
+version = "0.11.2"
 
 [[package]]
 name = "zmij"
