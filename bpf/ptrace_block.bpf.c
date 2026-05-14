@@ -93,10 +93,13 @@ static __always_inline void dispatch_ptrace_alert(__u32 tracer_tgid,
 	event->action_type = action_type;
 
 	/*
-	 * Memory-Boundary Safe Extraction
-	 * The TASK_COMM_LEN in the kernel is universally 16 bytes. We use
-	 * bpf_probe_read_kernel_str to safely extract the victim's process name
-	 * for the EDR telemetry without risking page faults.
+	 * Target Comm Extraction Exception
+	 * We intentionally do not use the `extract_safe_comm()` helper here.
+	 * That helper relies on `bpf_get_current_comm()`, which operates on the
+	 * executing task context (the attacker). Because we need to attribute the
+	 * victim's process name (`child->comm`) to the telemetry payload, we must
+	 * perform a dedicated memory-boundary safe extraction directly from the
+	 * targeted task_struct pointer via CO-RE.
 	 */
 	if (bpf_probe_read_kernel_str(event->target_comm,
 								  sizeof(event->target_comm),

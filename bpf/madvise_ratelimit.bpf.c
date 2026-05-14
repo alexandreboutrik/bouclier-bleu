@@ -211,12 +211,7 @@ int madvise_ratelimit_sys_enter(struct trace_event_raw_sys_enter *tp_args) {
 			event->count = (__u32)current_count;
 			event->action_type = ACTION_MADVISE_SPAM;
 
-			/* Memory-Boundary Safe String Extraction */
-			if (bpf_get_current_comm(event->comm, sizeof(event->comm)) < 0) {
-				char unknown_str[] = "<unknown>";
-				__builtin_memcpy(event->comm, unknown_str, sizeof(unknown_str));
-			}
-			event->comm[sizeof(event->comm) - 1] = '\0';
+			extract_safe_comm(event->comm, sizeof(event->comm));
 
 			bpf_ringbuf_submit(event, 0);
 		}

@@ -92,16 +92,7 @@ static __always_inline void dispatch_dump_alert(struct task_struct *task,
 	event->uid = get_global_uid();
 	event->action_type = action_type;
 
-	/*
-	 * Memory-Boundary Safe Extraction
-	 * Use the dedicated helper for process names instead of a raw core read.
-	 */
-	if (bpf_get_current_comm(event->comm, sizeof(event->comm)) < 0) {
-		char unknown_str[] = "<unknown>";
-		__builtin_memcpy(event->comm, unknown_str, sizeof(unknown_str));
-	}
-
-	event->comm[sizeof(event->comm) - 1] = '\0';
+	extract_safe_comm(event->comm, sizeof(event->comm));
 
 	bpf_ringbuf_submit(event, 0);
 
@@ -237,11 +228,7 @@ int BPF_KPROBE(dump_restrict_observer) {
 	payload.uid = uid;
 	payload.action_type = ACTION_PIPED_HANDLER;
 
-	if (bpf_get_current_comm(payload.comm, sizeof(payload.comm)) < 0) {
-		char unknown_str[] = "<unknown>";
-		__builtin_memcpy(payload.comm, unknown_str, sizeof(unknown_str));
-	}
-	payload.comm[sizeof(payload.comm) - 1] = '\0';
+	extract_safe_comm(payload.comm, sizeof(payload.comm));
 
 	/*
 	 * Temporal Lockbox: Push

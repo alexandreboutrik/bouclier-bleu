@@ -123,4 +123,30 @@ static __always_inline __u32 get_global_uid(void) {
 	return (__u32)BPF_CORE_READ(task, cred, uid.val);
 }
 
+/**
+ * extract_safe_comm() - Memory-Boundary Safe Process Name Extraction
+ * @dst: Pointer to the destination character array.
+ * @size: The maximum byte capacity of the destination buffer.
+ *
+ * Safely extracts the short name (comm) of the currently executing process.
+ * If the native eBPF helper fails (e.g., due to transient kernel states or
+ * edge-case execution contexts), it safely falls back to a default "<unknown>"
+ * identifier. This prevents uninitialized kernel stack memory from leaking
+ * into the telemetry stream.
+ *
+ * The explicit null-termination acts as a critical safety boundary,
+ * guaranteeing that the Rust userland daemon will not panic due to
+ * out-of-bounds string parsing during zero-copy deserialization from the
+ * ring buffer.
+ */
+static __always_inline void extract_safe_comm(char *dst, size_t size) {
+	if (bpf_get_current_comm(dst, size) < 0) {
+		char unknown_str[] = "<unknown>";
+		__builtin_memcpy(dst, unknown_str, sizeof(unknown_str));
+	}
+
+	/* Guarantee of null-termination for safe userland Rust parsing */
+	dst[size - 1] = '\0';
+}
+
 #endif /* __MODULE_CORE_H */
