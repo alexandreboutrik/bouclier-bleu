@@ -24,7 +24,7 @@
         in {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "bouclier-bleu";
-            version = "0.11.2";
+            version = "0.11.3";
 
             src = ./.;
 
