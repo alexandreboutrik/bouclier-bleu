@@ -80,6 +80,21 @@ function init_env() {
 	fi
 }
 
+function check_kernel_support() {
+	echo -e "\n➤ Checking kernel eBPF LSM support..."
+
+	# Check if 'bpf' is loaded in the active Security Modules
+	if ! grep -q "bpf" /sys/kernel/security/lsm 2>/dev/null; then
+		echo "  [-] Error: eBPF LSM is not active on this host."
+		echo "      Before installing Bouclier Bleu, enable BPF Security Modules."
+		echo "      Ensure your kernel supports CONFIG_BPF_LSM=y and append:"
+		echo "      'lsm=landlock,lockdown,yama,apparmor,bpf' to your GRUB boot parameters."
+		exit 1
+	fi
+
+	echo "  [+] eBPF LSM is active and supported."
+}
+
 function build_project() {
 	echo -e "\n➤ Building Bouclier Bleu (Release mode)..."
 
@@ -195,6 +210,7 @@ function install_service() {
 
 print_help
 init_env
+check_kernel_support
 
 build_project
 install_binaries
