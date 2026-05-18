@@ -43,61 +43,111 @@ function teardown() {
 trap teardown EXIT
 
 function provision_payloads() {
-	echo "  [*] Compiling inline Write XOR Execute (W^X) payloads..."
+	echo "  [*] Provisioning W^X test payloads..."
+
+	local C_SOURCE_TMP="/tmp/bb_strict_wx_payload.c"
+	TEST_PROT_BIN="${TEST_PROT_BIN:-/opt/bb_wx_protected}"
+	TEST_UNPROT_BIN="${TEST_UNPROT_BIN:-/opt/bb_wx_unprotected}"
+	local SO_TARGET="/opt/bb_wx_protected.so"
 
 	cat <<'EOF' >"${C_SOURCE_TMP}"
 #include <stdio.h>
 #include <sys/mman.h>
 #include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-int main() {
-    // Attempt 1: Direct RWX segment allocation via mmap
-    void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr == MAP_FAILED) {
-        return 13; // 13 is standard EACCES (Permission denied)
+int main(int argc, char *argv[]) {
+    if (argc < 2) return 1;
+
+    if (strcmp(argv[1], "direct_rwx") == 0) {
+        void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (ptr == MAP_FAILED) return 13;
+        return 0;
     }
-    
-    // Attempt 2: RW allocation followed by privilege escalation via mprotect
-    void *ptr2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr2 != MAP_FAILED) {
-        if (mprotect(ptr2, 4096, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-            return 13;
+
+    if (strcmp(argv[1], "sequential_w_to_x") == 0) {
+        void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (ptr != MAP_FAILED) {
+            if (mprotect(ptr, 4096, PROT_READ | PROT_EXEC) != 0) return 13;
         }
+        return 0;
     }
 
-    return 0; // W^X execution succeeded
+    if (strcmp(argv[1], "sequential_x_to_w") == 0) {
+        void *ptr = mmap(NULL, 4096, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (ptr != MAP_FAILED) {
+            if (mprotect(ptr, 4096, PROT_READ | PROT_WRITE) != 0) return 13;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "load_so") == 0) {
+        // Attempt to directly map the protected file while explicitly requesting W^X.
+        // The unprotected binary does not have the xattr, but the mapped_file DOES.
+        int fd = open("/opt/bb_wx_protected.so", O_RDONLY);
+        if (fd < 0) return 1;
+        
+        void *ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE, fd, 0);
+        if (ptr == MAP_FAILED) {
+            close(fd);
+            return 13; // Blocked by eBPF mapped_file inspection (-EACCES)
+        }
+        
+        close(fd);
+        return 0;
+    }
+
+    return 1;
 }
 EOF
 
+	# Compile the standard payloads
 	cc -o "${TEST_PROT_BIN}" "${C_SOURCE_TMP}" || {
-		echo "[-] Failed to compile protected payload."
+		echo "[-] Error: Failed to compile protected payload."
 		exit 1
 	}
 
 	cc -o "${TEST_UNPROT_BIN}" "${C_SOURCE_TMP}" || {
-		echo "[-] Failed to compile unprotected payload."
+		echo "[-] Error: Failed to compile unprotected payload."
 		exit 1
 	}
 
-	chmod +x "${TEST_PROT_BIN}" "${TEST_UNPROT_BIN}"
-
-	echo "  [*] Applying extended attributes (user.bouclier.strict_wx=1)..."
-	if command -v setfattr >/dev/null 2>&1; then
-		setfattr -n user.bouclier.strict_wx -v 1 "${TEST_PROT_BIN}" || {
-			echo "[-] Failed to set extended attribute. Ensure filesystem supports xattrs."
-			exit 1
-		}
-	else
-		echo "[-] 'setfattr' not found. Please install the 'attr' package in the test VM."
+	# Compile a dummy shared library
+	echo 'void dummy() {}' | cc -x c -shared -fPIC -o "${SO_TARGET}" - || {
+		echo "[-] Error: Failed to compile dummy shared library (.so)."
 		exit 1
-	fi
+	}
+
+	# Set executable permissions
+	chmod +x "${TEST_PROT_BIN}" "${TEST_UNPROT_BIN}" "${SO_TARGET}" || {
+		echo "[-] Error: Failed to set executable permissions on payloads."
+		exit 1
+	}
+
+	# Apply Bouclier Bleu strict_wx xattrs
+	setfattr -n user.bouclier.strict_wx -v 1 "${TEST_PROT_BIN}" || {
+		echo "[-] Error: Failed to set xattr on protected binary. Is the filesystem mounted with user_xattr?"
+		exit 1
+	}
+
+	setfattr -n user.bouclier.strict_wx -v 1 "${SO_TARGET}" || {
+		echo "[-] Error: Failed to set xattr on shared library."
+		exit 1
+	}
+
+	# Cleanup C source
+	rm -f "${C_SOURCE_TMP}"
+
+	echo "  [+] Payloads provisioned successfully."
 }
 
 function verify_unprotected_execution() {
 	echo "  [*] Validating Unprotected Execution (Expected: ALLOW)..."
 
 	set +e
-	"${TEST_UNPROT_BIN}" >/dev/null 2>&1
+	"${TEST_UNPROT_BIN}" direct_rwx >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
@@ -113,7 +163,7 @@ function verify_protected_execution() {
 	echo "  [*] Validating Protected Execution (Expected: BLOCK)..."
 
 	set +e
-	"${TEST_PROT_BIN}" >/dev/null 2>&1
+	"${TEST_PROT_BIN}" direct_rwx >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
@@ -131,6 +181,42 @@ function verify_protected_execution() {
 	echo "  [+] Protected W^X execution successfully vetoed (-EACCES)."
 }
 
+function verify_sequential_transitions() {
+	echo "  [*] Validating Sequential State Transitions (Expected: BLOCK)..."
+
+	set +e
+	"${TEST_PROT_BIN}" sequential_w_to_x >/dev/null 2>&1
+	local exit_w_to_x=$?
+
+	"${TEST_PROT_BIN}" sequential_x_to_w >/dev/null 2>&1
+	local exit_x_to_w=$?
+	set -e
+
+	if [[ "${exit_w_to_x}" -ne 13 ]] || [[ "${exit_x_to_w}" -ne 13 ]]; then
+		echo "[-] Assertion failed: Sequential W^X bypass succeeded! (Codes: ${exit_w_to_x}, ${exit_x_to_w})"
+		exit 1
+	fi
+
+	echo "  [+] Sequential mprotect bypasses successfully vetoed (-EACCES)."
+}
+
+function verify_shared_library_inheritance() {
+	echo "  [*] Validating Protected Shared Library (.so) loading (Expected: BLOCK)..."
+
+	set +e
+	# We run the UNPROTECTED binary, but tell it to load the PROTECTED .so file
+	"${TEST_UNPROT_BIN}" load_so >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 13 ]]; then
+		echo "[-] Assertion failed: Protected .so file bypassed W^X mitigation when loaded by an unprotected binary!"
+		exit 1
+	fi
+
+	echo "  [+] Protected Shared Library loading successfully vetoed (-EACCES)."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -140,7 +226,7 @@ function verify_ipc_detachment() {
 	}
 
 	set +e
-	"${TEST_PROT_BIN}" >/dev/null 2>&1
+	"${TEST_PROT_BIN}" direct_rwx >/dev/null 2>&1
 	local exit_code=$?
 	set -e
 
@@ -160,6 +246,8 @@ initialize_daemon "strict_wx"
 
 verify_unprotected_execution
 verify_protected_execution
+verify_sequential_transitions
+verify_shared_library_inheritance
 verify_ipc_detachment
 
 echo "  [+] Module 'strict_wx' validation passed."

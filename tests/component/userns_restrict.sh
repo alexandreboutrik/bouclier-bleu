@@ -296,6 +296,31 @@ function verify_nested_dev_mount() {
 	echo "  [+] Nested physical device mount successfully vetoed (-EPERM)."
 }
 
+function verify_true_sudo_proxy() {
+	echo "  [*] Validating True SUID Proxying via 'sudo' (Expected: BLOCK)..."
+
+	# Provision temporary password-less sudo for the test user
+	local sudoers_file="/etc/sudoers.d/bb_test_user"
+	echo "${TEST_USER} ALL=(ALL) NOPASSWD: ${USERNS_TESTER}" >"${sudoers_file}"
+	chmod 0440 "${sudoers_file}"
+
+	set +e
+	# Execute standard unshare through real sudo
+	su - "${TEST_USER}" -c "sudo ${USERNS_TESTER} unshare_user" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	# Clean up sudoers drop-in
+	rm -f "${sudoers_file}"
+
+	if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: True sudo proxy evasion was not blocked! (Exit code: ${exit_code})"
+		exit 1
+	fi
+
+	echo "  [+] True SUID Proxying via sudo successfully vetoed (-EPERM)."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -330,6 +355,7 @@ verify_double_fork_evasion
 verify_root_userns
 verify_nested_cap_sys_admin
 verify_nested_dev_mount
+verify_true_sudo_proxy
 verify_ipc_detachment
 
 echo "  [+] Module 'userns_restrict' validation passed."

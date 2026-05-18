@@ -293,6 +293,31 @@ EOF
 	echo "  [+] Orchestrator and entire process tree successfully eradicated."
 }
 
+function verify_dynamic_watchlist_mkdir() {
+	echo "  [*] Validating Dynamic Watchlist Inheritance via vfs_mkdir (Expected: BLOCK/KILL)..."
+
+	local NESTED_DIR="${TEST_DIR_SENSITIVE}/nested_staging"
+
+	# Create a new directory inside the protected path
+	# This should trigger the eBPF vfs_mkdir hook to add the new inode to the
+	# map
+	mkdir -p "${NESTED_DIR}"
+	touch "${NESTED_DIR}/base_file_nested"
+
+	set +e
+	# Execute a ransomware rename entirely contained within the new, nested
+	# directory
+	mv "${NESTED_DIR}/base_file_nested" "${NESTED_DIR}/${HIGH_ENTROPY_NAME}_nested" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Dynamic inheritance failed! New directory was not protected."
+		exit 1
+	fi
+	echo "  [+] Dynamic Watchlist Inheritance (vfs_mkdir) successfully tracked and killed the threat (Exit Code: ${exit_code})."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -331,6 +356,7 @@ verify_mount_namespace_evasion
 verify_cross_directory_evasion
 verify_deep_path_handling
 verify_process_tree_eradication
+verify_dynamic_watchlist_mkdir
 verify_ipc_detachment
 
 echo "  [+] Module 'rename_entropy' validation passed."

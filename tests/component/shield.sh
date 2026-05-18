@@ -227,6 +227,80 @@ function verify_syslog_leak() {
 	echo "  [+] KASLR bypass vector successfully mitigated (-EPERM)."
 }
 
+function verify_hardlink_spoofing() {
+	echo "  [*] Validating Hardlink Spoofing Evasion (Expected: BLOCK)..."
+
+	local HARDLINK_TARGET="/tmp/bb_config_hardlink"
+
+	# Create a true hardlink to the protected config
+	ln "${CONFIG_TARGET}" "${HARDLINK_TARGET}" 2>/dev/null || {
+		echo "[-] Failed to create hardlink across filesystems. Skipping test."
+		return 0
+	}
+
+	set +e
+	# Attempt to write to the config via the hardlink
+	su - "${TEST_USER}" -c "echo 'hardlink_evasion' > ${HARDLINK_TARGET}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	rm -f "${HARDLINK_TARGET}"
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Hardlink evasion bypassed the LSM hook (Inode extraction failed)!"
+		exit 1
+	fi
+
+	echo "  [+] Hardlink evasion successfully thwarted (Hardware Inode validated)."
+}
+
+function verify_path_truncation_fail_closed() {
+	echo "  [*] Validating ENAMETOOLONG Fail-Closed Logic (Expected: BLOCK)..."
+
+	local base_dir="/tmp/bb_shield_deep"
+	mkdir -p "${base_dir}"
+
+	local orig_dir="$(pwd)"
+	cd "${base_dir}" || exit 1
+
+	# Build the path incrementally to bypass user-space PATH_MAX limits during
+	# creation
+	for i in {1..22}; do
+		local next_dir="$(printf 'a%.0s' {1..200})"
+		mkdir "${next_dir}"
+		cd "${next_dir}" || exit 1
+	done
+
+	# Create the symlink using a relative path
+	ln -s "${CONFIG_TARGET}" "symlink_to_config"
+
+	set +e
+	# Traverse the path incrementally within the unprivileged shell.
+	# If we pass the absolute $(pwd) to 'cd', the shell will crash.
+	su - "${TEST_USER}" -c "
+        cd ${base_dir}
+        for i in {1..22}; do
+            cd \"\$(printf 'a%.0s' {1..200})\"
+        done
+        # The user-space write uses a short relative path, but the kernel VFS 
+        # bpf_d_path resolution will resolve the full absolute path (>4096) and fail.
+        echo 'truncation_test' > symlink_to_config
+    " >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	# 3. Cleanup
+	cd "${orig_dir}" || exit 1
+	rm -rf "${base_dir}"
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		echo "[-] Assertion failed: Overly long path resulted in a fail-open scenario!"
+		exit 1
+	fi
+
+	echo "  [+] Path truncation (-ENAMETOOLONG) successfully failed CLOSED."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -260,6 +334,8 @@ verify_file_read_allowed
 verify_root_file_access
 verify_bpf_tampering
 verify_syslog_leak
+verify_hardlink_spoofing
+verify_path_truncation_fail_closed
 verify_ipc_detachment
 
 echo "  [+] Module 'shield' validation passed."

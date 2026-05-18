@@ -28,7 +28,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common/common.sh"
 : "${TEST_SYMLINK:="/root/bb_test_symlink"}"
 : "${TEST_UNMONITORED:="/var/crash/bb_test_payload"}"
 : "${TEST_LONG_PATH_BASE:="/tmp/bb_long_path_test"}"
-: ${BB_DROPPER="/tmp/bb_memfd_dropper"}
+: ${BB_DROPPER="/opt/bb_memfd_dropper"}
 : "${EPERM_EXIT_CODE:=126}"
 
 DAEMON_PID=""
@@ -111,15 +111,34 @@ function provision_memfd_dropper() {
 #include <sys/prctl.h>
 #include <string.h>
 
+#ifndef MFD_ALLOW_SEALING
+#define MFD_ALLOW_SEALING 0x0002U
+#endif
+#ifndef MFD_EXEC
+#define MFD_EXEC 0x0010U // Required on Linux 6.3+ for executable memfds
+#endif
+
+// Pull in the native environment pointer to prevent ELF interpreter crashes
+extern char **environ; 
+
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "spoof") == 0) {
         prctl(PR_SET_NAME, "systemd", 0, 0, 0);
     }
 
-    int fd = memfd_create("dropper_test", 0); // Unsealed memory descriptor
+	int is_sealed = (argc > 1 && strcmp(argv[1], "sealed") == 0);
+
+    // 1. Attempt creation with explicit execute capabilities (modern kernels)
+    // 2. Fallback to standard sealing flags (older kernels)
+    int fd = memfd_create("dropper_test", MFD_ALLOW_SEALING | MFD_EXEC);
+    if (fd < 0) {
+        fd = memfd_create("dropper_test", MFD_ALLOW_SEALING);
+    }
     if (fd < 0) return 1;
 
-    int src = open("/usr/bin/true", O_RDONLY);
+    // Resolve binary safely
+    int src = open("/bin/true", O_RDONLY);
+    if (src < 0) src = open("/usr/bin/true", O_RDONLY);
     if (src < 0) return 1;
 
     char buf[4096];
@@ -129,13 +148,29 @@ int main(int argc, char *argv[]) {
     }
     close(src);
 
-    char *exec_argv[] = {"true", NULL};
-    char *exec_envp[] = {NULL};
+	if (is_sealed) {
+        // Legitimate execution requires the segment to be explicitly sealed
+        if (fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) < 0) {
+            return 1;
+        }
+    }
 
-    fexecve(fd, exec_argv, exec_envp);
+    // Duplicate the file descriptor as Read-Only and close the original 
+    // Writable handle to bypass native ETXTBSY (Text file busy) kernel locks.
+    char path[128];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+    int fd_exec = open(path, O_RDONLY);
+    if (fd_exec < 0) return 1;
     
-    // If we reach here, fexecve failed (blocked by eBPF -EPERM)
-    return 126; 
+    close(fd);
+
+    char *exec_argv[] = {"true", NULL};
+
+    // Execute using the safely inherited host environment
+    fexecve(fd_exec, exec_argv, environ);
+    
+    // If we reach here, fexecve failed natively or was successfully blocked by eBPF
+    return 126;
 }
 EOF
 
@@ -357,6 +392,48 @@ function verify_memfd_prctl_spoofing() {
 	echo "  [+] Spoofed fileless execution successfully thwarted (Seal Inspection held)."
 }
 
+function verify_sealed_memfd_execution() {
+	echo "  [*] Validating Sealed Fileless Execution (Expected: ALLOW)..."
+
+	set +e
+	"${BB_DROPPER}" sealed >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	# It should successfully execute 'true', yielding exit code 0
+	if [[ "${exit_code}" -eq "${EPERM_EXIT_CODE}" ]] || [[ "${exit_code}" -eq 1 ]]; then
+		echo "[-] Assertion failed: Properly sealed memfd execution was incorrectly blocked!"
+		exit 1
+	fi
+	echo "  [+] Sealed fileless execution cleanly bypassed."
+}
+
+function verify_dynamic_watchlist_exec() {
+	echo "  [*] Validating Dynamic Watchlist Inheritance (Expected: BLOCK)..."
+
+	local NESTED_DIR="/tmp/bb_exec_nested"
+
+	# Create the directory, triggering the vfs_mkdir eBPF hook
+	mkdir -p "${NESTED_DIR}"
+
+	local nested_payload="${NESTED_DIR}/payload"
+	cp "${TEST_PAYLOAD}" "${nested_payload}"
+	chmod +x "${nested_payload}"
+
+	set +e
+	"${nested_payload}" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	rm -rf "${NESTED_DIR}"
+
+	if [[ "${exit_code}" -ne "${EPERM_EXIT_CODE}" ]] && [[ "${exit_code}" -ne 1 ]]; then
+		echo "[-] Assertion failed: Execution from dynamically created nested directory bypassed the hook!"
+		exit 1
+	fi
+	echo "  [+] Nested directory execution successfully vetoed (Inherited protection validated)."
+}
+
 # ==========================================
 # ENTRYPOINT
 # ==========================================
@@ -373,5 +450,7 @@ verify_path_length_evasion
 verify_mount_namespace_evasion
 verify_memfd_execution
 verify_memfd_prctl_spoofing
+verify_sealed_memfd_execution
+verify_dynamic_watchlist_exec
 
 echo "  [+] Module 'exec_block_path' validation passed."

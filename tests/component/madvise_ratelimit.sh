@@ -97,6 +97,24 @@ int main(int argc, char *argv[]) {
         return 0; 
     }
 
+	if (strcmp(argv[1], "window_reset") == 0) {
+        /*
+         * Temporal Reset Simulation
+         * Execute 6,000 calls (below the 10,000 threshold), wait for the
+         * 1-second rolling window to expire, and execute 6,000 more.
+         */
+        for (int i = 0; i < 6000; i++) {
+            madvise(mem, page_size, MADV_DONTNEED);
+        }
+        
+        sleep(2); // Wait for the eBPF temporal window to expire
+        
+        for (int i = 0; i < 6000; i++) {
+            madvise(mem, page_size, MADV_DONTNEED);
+        }
+        return 0; // Should not be killed
+    }
+
     if (strcmp(argv[1], "shard") == 0) {
         /*
          * Process Sharding Bypass Simulation
@@ -205,6 +223,28 @@ function verify_shard_simulation() {
 	echo "  [+] Process sharding successfully neutralized via Global UID tracking."
 }
 
+function verify_temporal_window_reset() {
+	echo "  [*] Validating Temporal Rolling Window Reset (Expected: ALLOW)..."
+
+	# Wait for the eBPF 1-second rolling window to expire from the previous
+	# tests. Otherwise, residual counts from the multi-threaded 'shard' test
+	# will cause the first 6,000 calls to immediately cross the 10,000
+	# threshold and fail.
+	sleep 2
+
+	set +e
+	su - "${TEST_USER}" -c "${MADVISE_TESTER} window_reset" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq "${SIGKILL_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: Process was killed despite obeying the temporal window!"
+		exit 1
+	fi
+
+	echo "  [+] Temporal window successfully reset state. Execution allowed."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -236,6 +276,7 @@ verify_benign_madvise
 verify_alternate_flag
 verify_exploit_simulation
 verify_shard_simulation
+verify_temporal_window_reset
 verify_ipc_detachment
 
 echo "  [+] Module 'madvise_ratelimit' validation passed."

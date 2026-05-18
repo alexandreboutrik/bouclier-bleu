@@ -185,6 +185,32 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+	/* * 8. ABA Taint Mitigation (Pipe Reallocation)
+     * Taint a pipe, close it, open a new pipe, and write to it.
+     */
+    if (strcmp(argv[1], "aba_mitigation") == 0) {
+        int p1[2], p2[2];
+        if (pipe(p1) < 0) return 1;
+        
+        int fd_in = open("/etc/passwd", O_RDONLY);
+        if (fd_in < 0) return 1;
+
+        // Taint pipe 1
+        splice(fd_in, NULL, p1[1], NULL, 4, 0);
+        
+        // Trigger fentry/pipe_release to evict the taint
+        close(p1[0]);
+        close(p1[1]);
+        
+        // Kernel slab allocator likely reuses the same memory address for pipe 2
+        if (pipe(p2) < 0) return 1;
+        
+        // Attempt standard write. If ABA mitigation fails, this triggers SIGKILL.
+        write(p2[1], "safe_data", 9);
+        
+        return 0;
+    }
+
     return 1;
 }
 EOF
@@ -373,6 +399,22 @@ function verify_privileged_taint() {
 	echo "  [+] Privileged taint access cleanly bypassed."
 }
 
+function verify_aba_mitigation() {
+	echo "  [*] Validating Slab Allocator ABA Taint Mitigation (Expected: ALLOW)..."
+
+	set +e
+	su - "${TEST_USER}" -c "${TEST_UNAUTH_BIN} aba_mitigation" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq "${SIGKILL_EXIT_CODE}" ]]; then
+		echo "[-] Assertion failed: New pipe inherited a ghost taint and was incorrectly killed!"
+		exit 1
+	fi
+
+	echo "  [+] Pipe release hook successfully evicted stale taints. Write allowed."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -412,6 +454,7 @@ verify_tainted_pipeline_splice
 verify_tainted_pipeline_write
 verify_tainted_pipeline_outbound
 verify_privileged_taint
+verify_aba_mitigation
 verify_ipc_detachment
 
 echo "  [+] Module 'io_restrict' validation passed."

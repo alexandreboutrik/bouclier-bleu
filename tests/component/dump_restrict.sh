@@ -121,6 +121,13 @@ int main(int argc, char *argv[]) {
         *p = 0xDEADBEEF;
         return 0;
     }
+
+	if (strcmp(argv[1], "prctl_disable") == 0) {
+        // Attempt to benignly disable core dumping (arg2 == 0)
+        int ret = prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+        if (ret < 0) return 1; // System error
+        return 0; // Allowed by LSM
+    }
     
     return 1;
 }
@@ -283,6 +290,22 @@ function verify_root_piped_crash() {
 	echo "  [+] Root piped core dump successfully dispatched."
 }
 
+function verify_benign_prctl() {
+	echo "  [*] Validating Benign PR_SET_DUMPABLE Disabling (Expected: ALLOW)..."
+
+	set +e
+	su - "${TEST_USER}" -c "${DUMP_TESTER} prctl_disable" >/dev/null 2>&1
+	local exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -ne 0 ]]; then
+		echo "[-] Assertion failed: Benign disabling of PR_SET_DUMPABLE was incorrectly blocked!"
+		exit 1
+	fi
+
+	echo "  [+] Benign state tampering (disabling dumps) correctly allowed."
+}
+
 function verify_ipc_detachment() {
 	echo "  [*] Validating dynamic LSM hook detachment..."
 
@@ -316,6 +339,7 @@ verify_unprivileged_crash
 verify_root_crash
 verify_unprivileged_piped_crash
 verify_root_piped_crash
+verify_benign_prctl
 verify_ipc_detachment
 
 echo "  [+] Module 'dump_restrict' validation passed."
