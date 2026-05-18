@@ -52,7 +52,7 @@ struct exec_alert {
  * our dummy layout here and dynamically resolve the true offsets from
  * the target machine's kernel BTF at load time.
  */
-struct shmem_inode_info__stub {
+struct shmem_inode_info___stub {
 	int seals;
 	struct inode vfs_inode;
 } __attribute__((preserve_access_index));
@@ -149,12 +149,12 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		 * errors across different distributions.
 		 */
 		if (!bpf_core_field_exists(
-				((struct shmem_inode_info__stub *)0)->vfs_inode)) {
+				((struct shmem_inode_info___stub *)0)->vfs_inode)) {
 			return 0; // Graceful fallback on unsupported kernels
 		}
 
 		size_t offset = __builtin_preserve_field_info(
-			((struct shmem_inode_info__stub *)0)->vfs_inode, 0);
+			((struct shmem_inode_info___stub *)0)->vfs_inode, 0);
 
 		/*
 		 * Arithmetic Bounds Validation
@@ -162,12 +162,12 @@ int BPF_PROG(exec_block_bprm_check, struct linux_binprm *bprm) {
 		 * calculation yields 0 or an absurdly large offset.
 		 */
 		if (offset == 0 ||
-			offset > bpf_core_type_size(struct shmem_inode_info__stub)) {
+			offset > bpf_core_type_size(struct shmem_inode_info___stub)) {
 			return 0;
 		}
 
-		struct shmem_inode_info__stub *info =
-			(struct shmem_inode_info__stub *)((void *)f_inode - offset);
+		struct shmem_inode_info___stub *info =
+			(struct shmem_inode_info___stub *)((void *)f_inode - offset);
 
 		/*
 		 * If the CO-RE read fails entirely, default to allowing execution to
