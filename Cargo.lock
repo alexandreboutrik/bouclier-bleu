@@ -215,6 +215,7 @@ dependencies = [
  "quote",
  "rustix",
  "serde",
+ "serde_json",
  "toml",
 ]
 
